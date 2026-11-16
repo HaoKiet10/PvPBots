@@ -58,6 +58,14 @@ class BotManager(
     private val rng = Random.Default
     private val tickNanos = LongArray(100)
     private var tickSamples = 0
+
+    /** Wall time of the most recent [tickBots] call (all bots), in nanoseconds. */
+    var lastTickNanos = 0L
+        private set
+
+    /** Total wall time spent in [spawn] since start (self-test measurements read differences of it). */
+    var spawnNanos = 0L
+        private set
     private var suppressTitles = false
     private var distanceWarned = false
 
@@ -81,6 +89,15 @@ class BotManager(
     }
 
     override fun spawn(key: SessionKey, role: Role, difficulty: Difficulty, area: AreaRef, nearPlayer: UUID): UUID? {
+        val start = System.nanoTime()
+        try {
+            return spawnTimed(key, role, difficulty, area, nearPlayer)
+        } finally {
+            spawnNanos += System.nanoTime() - start
+        }
+    }
+
+    private fun spawnTimed(key: SessionKey, role: Role, difficulty: Difficulty, area: AreaRef, nearPlayer: UUID): UUID? {
         try {
             val world = Bukkit.getWorld(area.world) ?: return null.also { logger.warning("Bot spawn: world ${area.world} is not loaded") }
             val near = Bukkit.getEntity(nearPlayer)
@@ -99,10 +116,10 @@ class BotManager(
             val profile = config.profiles.getValue(difficulty)
             val skin = config.skins.pick(rng)
             val id = UUID.randomUUID()
-            val handle = adapter.spawn(BotSpec(nameFor(role, id), id, skin?.value, skin?.signature), at)
+            val handle = BotProfiler.spawnPart(BotProfiler.SpawnPart.ADAPTER) { adapter.spawn(BotSpec(nameFor(role, id), id, skin?.value, skin?.signature), at) }
             try {
-                config.kits.apply(handle.bukkit, profile.kit, profile)
-                applyDistances(handle.bukkit)
+                BotProfiler.spawnPart(BotProfiler.SpawnPart.KIT) { config.kits.apply(handle.bukkit, profile.kit, profile) }
+                BotProfiler.spawnPart(BotProfiler.SpawnPart.DISTANCES) { applyDistances(handle.bukkit) }
                 val controller = BotController(this, handle, key, role, profile, area, facing)
                 val record = BotRecord(handle, key, role, profile, area, controller)
                 bots[handle.id] = record
@@ -144,7 +161,8 @@ class BotManager(
             logger.log(Level.SEVERE, "Bot ${r.handle} (session ${r.key}) failed and was removed", e)
             failed(r.id)
         }
-        tickNanos[tickSamples % tickNanos.size] = System.nanoTime() - start
+        lastTickNanos = System.nanoTime() - start
+        tickNanos[tickSamples % tickNanos.size] = lastTickNanos
         tickSamples++
     }
 
@@ -166,11 +184,14 @@ class BotManager(
         val d = config.settings.botViewDistance
         val view = runCatching { p.viewDistance = d }
         val sim = runCatching { p.simulationDistance = d }
-        if ((view.isFailure || sim.isFailure) && !distanceWarned) {
+        // Nobody reads a bot's chunk packets (its connection drops them): send distance 0 stops Paper from building
+        // and "sending" chunks to it. Chunks around the bot still load and tick (view/simulation distance above).
+        val send = runCatching { p.sendViewDistance = 0 }
+        if ((view.isFailure || sim.isFailure || send.isFailure) && !distanceWarned) {
             distanceWarned = true
             logger.warning(
                 "bot.view-distance $d could not be applied: view ${view.exceptionOrNull()?.message ?: "ok"}, " +
-                    "simulation ${sim.exceptionOrNull()?.message ?: "ok"}",
+                    "simulation ${sim.exceptionOrNull()?.message ?: "ok"}, send distance 0 ${send.exceptionOrNull()?.message ?: "ok"}",
             )
         }
     }

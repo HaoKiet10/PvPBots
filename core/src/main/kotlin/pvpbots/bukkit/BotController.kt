@@ -6,6 +6,8 @@ import org.bukkit.entity.LivingEntity
 import org.bukkit.inventory.EquipmentSlot
 import pvpbots.adapter.BotHandle
 import pvpbots.adapter.BotInput
+import pvpbots.bukkit.BotProfiler.Counter
+import pvpbots.bukkit.BotProfiler.Phase
 import pvpbots.bukkit.PerceptionBuilder.aabb
 import pvpbots.bukkit.PerceptionBuilder.vec
 import pvpbots.combat.Action
@@ -14,6 +16,7 @@ import pvpbots.combat.BrainState
 import pvpbots.combat.Intent
 import pvpbots.combat.MoveStyle
 import pvpbots.combat.Perception
+import pvpbots.combat.RefreshClock
 import pvpbots.combat.TargetView
 import pvpbots.combat.TrainerBrain
 import pvpbots.math.Aim
@@ -24,6 +27,7 @@ import pvpbots.math.MoveInput
 import pvpbots.math.Rotation
 import pvpbots.math.Vec3
 import pvpbots.path.Pathfinder
+import pvpbots.path.ReachCheck
 import pvpbots.path.SpawnPointFinder
 import pvpbots.path.StuckDetector
 import pvpbots.path.Verdict
@@ -55,11 +59,11 @@ class BotController(
     private val adapter get() = manager.adapter
 
     private var look = initialLook
-    private var lastRefresh = NEVER
+    private val refreshClock = RefreshClock(profile.reactionTicks, rng)
+    private val reachCheck = ReachCheck()
     private var target: LivingEntity? = null
     private var targetView: TargetView? = null
     private var followPos: Vec3? = null
-    private var reachable = true
     private var aimOffset = Rotation(0f, 0f)
 
     private var path: List<BlockPos> = emptyList()
@@ -96,19 +100,21 @@ class BotController(
             adapter.stopUsing(handle)
         }
         val liveTarget = target?.takeIf { it.isValid && !it.isDead }
-        if (tick - lastRefresh >= profile.reactionTicks.coerceAtLeast(1) || (target != null && liveTarget == null)) {
-            refreshTarget(bot)
-            lastRefresh = tick
+        if (refreshClock.due(tick) || (target != null && liveTarget == null)) {
+            BotProfiler.timed(Phase.REFRESH) { refreshTarget(bot, tick) }
+            refreshClock.mark(tick)
         }
-        val perception = PerceptionBuilder.perceive(bot, look, targetView, reachable, followPos)
+        val perception = BotProfiler.timed(Phase.PERCEIVE) { PerceptionBuilder.perceive(bot, look, targetView, reachCheck.reachable, followPos) }
         statTicks++
         val tv = targetView
         if (tv == null) statNoTarget++ else statMinDist = minOf(statMinDist, (tv.pos - perception.pos).length())
-        var intent = if (manager.director.fighting(handle.id)) {
-            if (role == Role.TRAINER) TrainerBrain.decide(perception, profile, brain, rng)
-            else AllyBrain.decide(perception, profile, brain, rng)
-        } else {
-            Intent(MoveStyle.STAND, null, targetView?.let(::chest), false, Action.NONE, -1, null)
+        var intent = BotProfiler.timed(Phase.DECIDE) {
+            if (manager.director.fighting(handle.id)) {
+                if (role == Role.TRAINER) TrainerBrain.decide(perception, profile, brain, rng)
+                else AllyBrain.decide(perception, profile, brain, rng)
+            } else {
+                Intent(MoveStyle.STAND, null, targetView?.let(::chest), false, Action.NONE, -1, null)
+            }
         }
         if (role == Role.ALLY && !area.bounds.contains(perception.pos)) {
             val back = area.bounds.clamp(perception.pos)
@@ -117,8 +123,11 @@ class BotController(
 
         // Move target -> next waypoint; jump up steps; stuck handling.
         var jump = intent.jump
-        val waypoint = intent.moveTarget?.takeIf { intent.style == MoveStyle.WALK || intent.style == MoveStyle.APPROACH_SPRINT }
-            ?.let { goal -> nextWaypoint(perception.pos, goal, tick) }
+        val waypoint = BotProfiler.timed(Phase.PATH) {
+            intent.moveTarget?.takeIf { intent.style == MoveStyle.WALK || intent.style == MoveStyle.APPROACH_SPRINT }
+                ?.let { goal -> nextWaypoint(perception.pos, goal, tick) }
+        }
+        val steerStart = if (BotProfiler.enabled) System.nanoTime() else 0L
         if (waypoint != null && waypoint.y > perception.pos.y + 0.5 && perception.onGround) jump = true
         jump = jump or handleStuck(intent, perception, tick)
 
@@ -134,27 +143,44 @@ class BotController(
         val move = moveInput(intent, perception, waypoint)
         val sprint = intent.style == MoveStyle.APPROACH_SPRINT
         adapter.setInput(handle, BotInput(move.forward, move.strafe, jump, sprint, false, look.yaw, look.pitch))
+        if (BotProfiler.enabled) BotProfiler.nanos[Phase.STEER.ordinal] += System.nanoTime() - steerStart
 
         statLastIntent = intent
-        act(intent, perception)
+        BotProfiler.timed(Phase.ACT) { act(intent, perception) }
     }
 
-    private fun refreshTarget(bot: org.bukkit.entity.Player) {
+    private fun refreshTarget(bot: org.bukkit.entity.Player, tick: Long) {
         val isBot = manager::isBot
         target = when (val k = key) {
             is SessionKey.Trainer -> PerceptionBuilder.livingTarget(bot, k.owner)
-            is SessionKey.Squad -> PerceptionBuilder.allyTarget(bot, area.bounds, isBot)
+            is SessionKey.Squad -> BotProfiler.timed(Phase.SCAN) { PerceptionBuilder.allyTarget(bot, area.bounds, isBot) }
         }
         targetView = target?.let(PerceptionBuilder::targetView)
         followPos = if (role == Role.ALLY) PerceptionBuilder.followPos(bot, area.bounds, isBot) else null
         aimOffset = Aim.withError(Rotation(0f, 0f), profile.aimErrorDeg, rng)
-        reachable = role != Role.ALLY || targetView?.let { reachableOnFoot(vec(bot.location), it.pos) } ?: true
+        val tv = targetView
+        if (role == Role.ALLY && tv != null) {
+            val pos = vec(bot.location)
+            if (reachCheck.due(tick, tv.id, pos, tv.pos)) {
+                BotProfiler.timed(Phase.REACHABLE) { reachCheck.record(tick, tv.id, pos, tv.pos, reachableOnFoot(pos, tv.pos, tick)) }
+            }
+        }
     }
 
-    /** Allies switch to the bow when no walkable path ends within 2 blocks of the target. */
-    private fun reachableOnFoot(pos: Vec3, goal: Vec3): Boolean {
+    /**
+     * Allies switch to the bow when no walkable path ends within 2 blocks of the target. A path found here becomes the
+     * bot's current path toward the target, so [nextWaypoint] does not search the same route again this tick.
+     */
+    private fun reachableOnFoot(pos: Vec3, goal: Vec3, tick: Long): Boolean {
         if (pos.horizontalDistance(goal) <= 2.0 && abs(goal.y - pos.y) < 1.5) return true
-        return Pathfinder.find(BukkitBlockGrid(handle.bukkit.world), feet(pos), feet(goal), area.bounds).isNotEmpty()
+        BotProfiler.count(Counter.ASTAR_REACHABLE)
+        val found = Pathfinder.find(BukkitBlockGrid(handle.bukkit.world), feet(pos), feet(goal), area.bounds)
+        if (found.isEmpty()) return false
+        path = found
+        pathIndex = 0
+        pathGoal = goal
+        pathTick = tick
+        return true
     }
 
     private fun chest(t: TargetView): Vec3 = (t.box.min + t.box.max) * 0.5
@@ -173,6 +199,7 @@ class BotController(
         val old = pathGoal
         if (old == null || (goal - old).length() > 2.0 || tick - pathTick >= REPATH_TICKS) {
             val world = handle.bukkit.world
+            BotProfiler.count(Counter.ASTAR_WAYPOINT)
             path = Pathfinder.find(BukkitBlockGrid(world), feet(pos), feet(goal), area.bounds)
             pathIndex = 0
             pathGoal = goal

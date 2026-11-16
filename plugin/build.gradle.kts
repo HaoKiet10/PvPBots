@@ -81,7 +81,7 @@ tasks.runServer {
 /**
  * Starts a dev server that runs the in-server self-test at startup and shuts down; then checks
  * plugins/PvpBots/selftest-result.txt and scans the world folders for files named after any spawned bot (D1).
- * `-Pselftest=trainer|ally|all` picks the checks (default all).
+ * `-Pselftest=trainer|ally|all|load:N` picks the checks (default all; `load:N` is the N-bot performance check).
  */
 fun registerSelfTest(name: String, server: DevServer, runDir: String, port: Int) = tasks.register<RunServer>(name) {
     group = "verification"
@@ -100,7 +100,7 @@ fun registerSelfTest(name: String, server: DevServer, runDir: String, port: Int)
         acceptEula(selfTestDir)
         resultFile.delete()
         botsFile.delete()
-        File(selfTestDir, "pvpbots_selftest").deleteRecursively()
+        listOf("pvpbots_selftest", "pvpbots_selftest_2", "pvpbots_selftest_3").forEach { File(selfTestDir, it).deleteRecursively() }
     }
     doLast {
         if (!resultFile.isFile) throw GradleException("Self-test produced no result file: $resultFile")

@@ -1,5 +1,7 @@
 package pvpbots.bukkit
 
+import com.destroystokyo.paper.event.server.ServerTickEndEvent
+import io.papermc.paper.event.packet.PlayerChunkLoadEvent
 import org.bukkit.Bukkit
 import org.bukkit.Difficulty as WorldDifficulty
 import org.bukkit.GameMode
@@ -76,6 +78,10 @@ class SelfTest(
     private val blockedFromBots = HashMap<UUID, Int>()
     private val firstDamageTick = HashMap<UUID, Long>()
     private var zombieHits = 0
+    private var loadRecording = false
+    private val msptSamples = ArrayList<Double>()
+    private var chunkLoadsBots = 0
+    private var chunkLoadsOthers = 0
     private var zombieHitsCancelled = 0
     private var zombieDamage = 0.0
     private var task: BukkitTask? = null
@@ -294,24 +300,153 @@ class SelfTest(
         zombies.clear()
     }
 
+    /** A hostile spot in a load-test ally area: the zombie there is replaced [RESPAWN_TICKS] after it dies. */
+    private class MobSpot(val world: World, val x: Int, val z: Int, val pillar: Boolean) {
+        var zombie: Zombie? = null
+        var deadFor = 0
+    }
+
+    /**
+     * `load:N`: N/2 trainers (HARD) fighting dummy owners in their own arenas, spread over 3 worlds, plus the other
+     * N/2 as ally squads of 10 (HARD) in boss areas with zombies that keep coming back (one stands on a pillar the
+     * allies cannot walk up, so they also use the bow). Measures the spawn burst, then [LOAD_TICKS] ticks of steady
+     * state: summed [BotController.tick] time per tick (bot work) and server MSPT ([ServerTickEndEvent]).
+     */
     private suspend fun SequenceScope<Int>.loadCheck(n: Int) {
+        val worlds = listOf(world, setupWorld(WORLD + "_2"), setupWorld(WORLD + "_3"))
         plugin.newDirector(n)
-        val owners = ArrayList<Pair<BotHandle, AreaRef>>()
-        for (i in 0 until n) {
-            val x = 1000 + (i % 10) * 40
-            val z = (i / 10) * 40
-            val owner = spawnDummy("Load", x, z)
-            owners += owner to area("selftest_load_$i", x, z, Role.TRAINER, Difficulty.HARD, 1)
+        val trainers = n / 2
+        val allyTotal = n - trainers
+        val entries = ArrayList<Pair<BotHandle, AreaRef>>()
+        for (i in 0 until trainers) {
+            val w = worlds[i % worlds.size]
+            val j = i / worlds.size
+            val x = 1000 + (j % 6) * 40
+            val z = (j / 6) * 40
+            entries += spawnDummy("L", x, z, w) to area("selftest_load_t$i", x, z, Role.TRAINER, Difficulty.HARD, 1, w = w)
         }
+        val spots = ArrayList<MobSpot>()
+        var a = 0
+        var allyLeft = allyTotal
+        while (allyLeft > 0) {
+            val w = worlds[a % worlds.size]
+            val x = 2000 + (a / worlds.size) * 80
+            val count = minOf(10, allyLeft)
+            allyLeft -= count
+            entries += spawnDummy("A", x, 0, w) to area("selftest_load_a$a", x, 0, Role.ALLY, Difficulty.HARD, count, radius = 16, w = w)
+            spots += MobSpot(w, x + 10, -6, false)
+            spots += MobSpot(w, x - 10, 6, false)
+            spots += MobSpot(w, x + 6, 10, false)
+            // 5-high stone pillar: the zombie on top is unreachable on foot and above HIGH_TARGET, so allies shoot it.
+            val g = groundY(x + 9, 8, w) // the flat floor next to it, so re-running on a kept world is idempotent
+            for (y in g until g + 5) w.getBlockAt(x + 8, y, 8).type = org.bukkit.Material.STONE
+            spots += MobSpot(w, x + 8, 8, true)
+            a++
+        }
+        spots.forEach { respawn(it) }
         yield(5)
-        owners.forEach { (o, a) -> director.onAreaChange(o.id, null, a, nowMs()) }
-        yield(200)
-        val live = manager.count()
-        val ms = manager.averageTickMs()
-        check("L1 load $n", live == n, "$live/$n trainer bots live after 200 ticks; average bot tick ${"%.3f".format(ms)} ms (all bots, last 100 ticks)")
-        owners.forEach { (o, a) -> director.onAreaChange(o.id, a, null, nowMs()) }
+
+        // Spawn burst: every session starts in this one tick.
+        loadRecording = true
+        BotProfiler.reset()
+        BotProfiler.enabled = true
+        val spawnNanos0 = manager.spawnNanos
+        val wall0 = System.nanoTime()
+        entries.forEach { (o, ar) -> director.onAreaChange(o.id, null, ar, nowMs()) }
+        val burstMs = (System.nanoTime() - wall0) / 1e6
+        val spawnMs = (manager.spawnNanos - spawnNanos0) / 1e6
+        val spawned = manager.count()
+        BotProfiler.enabled = false
+        val spawnParts = BotProfiler.SpawnPart.entries.joinToString(" ") { "${it.name.lowercase()}=${"%.1f".format(BotProfiler.spawnNanos[it.ordinal] / 1e6)}" }
+        val spikeBot = ArrayList<Double>()
+        repeat(SPIKE_TICKS) {
+            yield(1)
+            tendMobs(spots)
+            spikeBot += manager.lastTickNanos / 1e6
+        }
+        val spikeMspt = msptSamples.toList()
+        val spikeChunksBots = chunkLoadsBots
+        val spikeChunksDummies = chunkLoadsOthers
+
+        // Steady state.
+        val liveAtStart = manager.count()
+        msptSamples.clear()
+        chunkLoadsBots = 0
+        chunkLoadsOthers = 0
+        BotProfiler.reset()
+        BotProfiler.enabled = true
+        val botMs = ArrayList<Double>(LOAD_TICKS)
+        var killed = 0
+        repeat(LOAD_TICKS) {
+            yield(1)
+            botMs += manager.lastTickNanos / 1e6
+            killed += tendMobs(spots)
+        }
+        BotProfiler.enabled = false
+        loadRecording = false
+        val mspt = msptSamples.toList()
+        val liveAtEnd = manager.count()
+        val trainersEnd = manager.records().count { it.role == Role.TRAINER }
+
+        val avg = botMs.average()
+        check(
+            "L1 load $n",
+            liveAtStart == n && avg <= LOAD_BUDGET_MS,
+            "bots live $liveAtStart/$n at start, $liveAtEnd at end ($trainersEnd trainers); bot work per tick over $LOAD_TICKS ticks: " +
+                "${stats(botMs)} (budget avg <= $LOAD_BUDGET_MS ms); server MSPT ${stats(mspt)} (${mspt.size} ticks)",
+        )
+        info(
+            "L1 spawn burst: $spawned bots spawned in one tick, director+spawn calls ${"%.1f".format(burstMs)} ms " +
+                "(BotManager.spawn ${"%.1f".format(spawnMs)} ms: $spawnParts); next $SPIKE_TICKS ticks: server MSPT ${stats(spikeMspt)}, " +
+                "first 5 ticks ${spikeMspt.take(5).joinToString(" ") { "%.1f".format(it) }}; bot work ${stats(spikeBot)}; " +
+                "chunk sends (PlayerChunkLoadEvent) to bots $spikeChunksBots, to dummies $spikeChunksDummies",
+        )
+        val perTick = { v: Long -> "%.3f".format(v / 1e6 / LOAD_TICKS) }
+        info(
+            "L1 phases (ms/tick, all bots; scan and reachable are inside refresh): " +
+                BotProfiler.Phase.entries.joinToString(" ") { "${it.name.lowercase()}=${perTick(BotProfiler.nanos[it.ordinal])}" } +
+                "; calls per tick: " +
+                BotProfiler.Counter.entries.joinToString(" ") { "${it.name.lowercase()}=${"%.2f".format(BotProfiler.counts[it.ordinal].toDouble() / LOAD_TICKS)}" } +
+                "; steady chunk sends to bots $chunkLoadsBots, to dummies $chunkLoadsOthers; zombies killed $killed",
+        )
+        entries.forEach { (o, ar) -> director.onAreaChange(o.id, ar, null, nowMs()) }
         plugin.newDirector(null)
-        owners.forEach { removeDummy(it.first) }
+        entries.forEach { removeDummy(it.first) }
+    }
+
+    /** Replaces load-test zombies [RESPAWN_TICKS] after they die. Returns how many were found dead this tick. */
+    private fun tendMobs(spots: List<MobSpot>): Int {
+        var died = 0
+        for (s in spots) {
+            val z = s.zombie
+            if (z != null && z.isValid && !z.isDead) continue
+            if (s.deadFor == 0) died++
+            if (++s.deadFor >= RESPAWN_TICKS) {
+                z?.let { zombies.remove(it) }
+                respawn(s)
+            }
+        }
+        return died
+    }
+
+    private fun respawn(s: MobSpot) {
+        val z = spawnZombie(s.x, s.z, s.world)
+        if (s.pillar) z.setAI(false)
+        s.zombie = z
+        s.deadFor = 0
+    }
+
+    private fun stats(v: List<Double>): String {
+        if (v.isEmpty()) return "no samples"
+        val sorted = v.sorted()
+        val p95 = sorted[((sorted.size - 1) * 0.95).toInt()]
+        return "avg ${"%.3f".format(v.average())} / p95 ${"%.3f".format(p95)} / max ${"%.3f".format(sorted.last())} ms"
+    }
+
+    private fun info(text: String) {
+        val line = "INFO $text"
+        lines += line
+        report(line)
     }
 
     // ---- helpers ----
@@ -339,12 +474,12 @@ class SelfTest(
         report(line)
     }
 
-    private fun setupWorld(): World {
-        val w = Bukkit.getWorld(WORLD) ?: WorldCreator(WORLD)
+    private fun setupWorld(name: String = WORLD): World {
+        val w = Bukkit.getWorld(name) ?: WorldCreator(name)
             .type(WorldType.FLAT)
             .generateStructures(false)
             .generatorSettings("""{"layers":[{"block":"minecraft:bedrock","height":1},{"block":"minecraft:stone","height":3}],"biome":"minecraft:plains"}""")
-            .createWorld() ?: error("could not create world $WORLD")
+            .createWorld() ?: error("could not create world $name")
         w.setGameRule(GameRules.SPAWN_MOBS, false)
         w.setGameRule(GameRules.ADVANCE_TIME, false)
         w.setGameRule(GameRules.ADVANCE_WEATHER, false)
@@ -357,15 +492,15 @@ class SelfTest(
         return w
     }
 
-    private fun groundY(x: Int, z: Int): Int = world.getHighestBlockYAt(x, z) + 1
+    private fun groundY(x: Int, z: Int, w: World = world): Int = w.getHighestBlockYAt(x, z) + 1
 
-    private fun area(id: String, cx: Int, cz: Int, role: Role, d: Difficulty, count: Int, radius: Int = 14): AreaRef {
-        val y = groundY(cx, cz)
-        return AreaRef(world.name, id, role, d, count, Bounds(BlockPos(cx - radius, y - 4, cz - radius), BlockPos(cx + radius, y + 12, cz + radius)))
+    private fun area(id: String, cx: Int, cz: Int, role: Role, d: Difficulty, count: Int, radius: Int = 14, w: World = world): AreaRef {
+        val y = groundY(cx, cz, w)
+        return AreaRef(w.name, id, role, d, count, Bounds(BlockPos(cx - radius, y - 4, cz - radius), BlockPos(cx + radius, y + 12, cz + radius)))
     }
 
-    private fun spawnDummy(label: String, x: Int, z: Int): BotHandle {
-        val loc = Location(world, x + 0.5, groundY(x, z).toDouble(), z + 0.5)
+    private fun spawnDummy(label: String, x: Int, z: Int, w: World = world): BotHandle {
+        val loc = Location(w, x + 0.5, groundY(x, z, w).toDouble(), z + 0.5)
         val id = UUID.randomUUID()
         val h = manager.adapter.spawn(BotSpec("St${label}_${id.toString().take(4)}", id, null, null), loc)
         dummies += h
@@ -379,9 +514,9 @@ class SelfTest(
         dummies.remove(h)
     }
 
-    private fun spawnZombie(x: Int, z: Int) {
-        val loc = Location(world, x + 0.5, groundY(x, z).toDouble(), z + 0.5)
-        zombies += world.spawn(loc, Zombie::class.java, false) { zb ->
+    private fun spawnZombie(x: Int, z: Int, w: World = world): Zombie {
+        val loc = Location(w, x + 0.5, groundY(x, z, w).toDouble(), z + 0.5)
+        val zombie = w.spawn(loc, Zombie::class.java, false) { zb ->
             zb.setAdult()
             zb.setShouldBurnInDay(false)
             zb.equipment.clear()
@@ -390,6 +525,8 @@ class SelfTest(
             zb.removeWhenFarAway = false
             zb.getAttribute(Attribute.SPAWN_REINFORCEMENTS)?.baseValue = 0.0
         }
+        zombies += zombie
+        return zombie
     }
 
     private fun zombiesAlive(): Int = zombies.count { it.isValid && !it.isDead }
@@ -405,6 +542,17 @@ class SelfTest(
     private fun botDamager(e: Entity): Boolean {
         val source = (e as? Projectile)?.shooter as? Entity ?: e
         return manager.isBot(source.uniqueId)
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    fun onTickEnd(event: ServerTickEndEvent) {
+        if (loadRecording) msptSamples += event.tickDuration
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    fun onChunkSend(event: PlayerChunkLoadEvent) {
+        if (!loadRecording) return
+        if (manager.isBot(event.player.uniqueId)) chunkLoadsBots++ else chunkLoadsOthers++
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -430,6 +578,8 @@ class SelfTest(
         if (finished) return
         finished = true
         task?.cancel()
+        BotProfiler.enabled = false
+        loadRecording = false
         HandlerList.unregisterAll(this)
         manager.spawnObserver = null
         zombies.forEach { runCatching { it.remove() } }
@@ -452,6 +602,10 @@ class SelfTest(
         const val WORLD = "pvpbots_selftest"
         const val RESULT_FILE = "selftest-result.txt"
         const val BOTS_FILE = "selftest-bots.txt"
+        private const val LOAD_TICKS = 1200
+        private const val SPIKE_TICKS = 100
+        private const val RESPAWN_TICKS = 20
+        private const val LOAD_BUDGET_MS = 10.0
         private val TRAINER_NAME = Regex("^Trainer_[0-9a-f]{4}$")
         private val ALLY_NAME = Regex("^Ally_[0-9a-f]{4}$")
     }

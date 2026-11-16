@@ -104,6 +104,7 @@ object PerceptionBuilder {
 
     /** Ally target: hostile ([Enemy]) living entities inside [bounds], chosen by [TargetSelector]. */
     fun allyTarget(bot: Player, bounds: Bounds, isBot: (UUID) -> Boolean): LivingEntity? {
+        BotProfiler.count(BotProfiler.Counter.ENEMY_SCAN)
         val box = BoundingBox(
             bounds.min.x.toDouble(), bounds.min.y.toDouble(), bounds.min.z.toDouble(),
             bounds.max.x + 1.0, bounds.max.y + 1.0, bounds.max.z + 1.0,
