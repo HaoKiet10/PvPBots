@@ -1,0 +1,22 @@
+[versions]
+kotlin = "2.4.21"
+paperweight = "2.0.0-beta.24"
+runPaper = "3.1.0"
+shadow = "9.3.0"
+paperApi = "1.21.11-R0.1-SNAPSHOT"
+worldguard = "7.0.14"
+junit = "5.12.2"
+
+[libraries]
+paper-api = { module = "io.papermc.paper:paper-api", version.ref = "paperApi" }
+worldguard-bukkit = { module = "com.sk89q.worldguard:worldguard-bukkit", version.ref = "worldguard" }
+kotlin-stdlib = { module = "org.jetbrains.kotlin:kotlin-stdlib", version.ref = "kotlin" }
+kotlin-test-junit5 = { module = "org.jetbrains.kotlin:kotlin-test-junit5", version.ref = "kotlin" }
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
+junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
+
+[plugins]
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+paperweight-userdev = { id = "io.papermc.paperweight.userdev", version.ref = "paperweight" }
+run-paper = { id = "xyz.jpenilla.run-paper", version.ref = "runPaper" }
+shadow = { id = "com.gradleup.shadow", version.ref = "shadow" }
