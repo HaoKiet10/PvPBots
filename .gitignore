@@ -1,0 +1,7 @@
+build/
+.gradle/
+.kotlin/
+run/
+*.iml
+.idea/
+.superpowers/
