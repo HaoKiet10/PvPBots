@@ -3,6 +3,8 @@ build/
 .kotlin/
 run/
 run-selftest/
+run-selftest-26_1/
+run-selftest-26_2/
 *.iml
 .idea/
 .superpowers/
