@@ -168,4 +168,11 @@ class TrainerSessionTest {
         assertEquals("Trainer won", Messages.TRAINER_WON)
         assertEquals("Time's up — draw", Messages.DRAW)
     }
+
+    @Test fun spawnFailed_staysQueuedAndAllowsNewGrant() {
+        val s = trainer(); s.start(0); s.slotGranted(0)
+        assertTrue(s.spawnFailed(10).isEmpty())
+        assertEquals(QUEUED, s.state())
+        assertEquals(1, s.slotGranted(5_000).size)
+    }
 }

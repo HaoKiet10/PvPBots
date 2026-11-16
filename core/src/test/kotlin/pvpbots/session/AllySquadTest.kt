@@ -111,4 +111,11 @@ class AllySquadTest {
         assertTrue(q.playerLeft(P2, 1).isEmpty())
         assertEquals(ACTIVE, q.state())
     }
+
+    @Test fun spawnFailed_isNoOp() {
+        val q = squad(2); q.playerEntered(P1, 0); q.slotGranted(0)
+        assertTrue(q.spawnFailed(10).isEmpty())
+        assertEquals(ACTIVE, q.state())
+        assertEquals(1, q.slotGranted(5_000).size)
+    }
 }

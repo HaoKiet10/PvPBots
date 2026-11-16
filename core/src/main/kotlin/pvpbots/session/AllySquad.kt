@@ -59,6 +59,9 @@ class AllySquad(private val area: AreaRef, private val t: Timings) {
         return emptyList()
     }
 
+    /** The spawn requested by [slotGranted] failed; nothing to undo here (the director releases the slot and re-requests). Returns empty. */
+    fun spawnFailed(nowMs: Long): List<Effect> = emptyList()
+
     fun allyDied(botId: UUID, nowMs: Long): List<Effect> {
         if (state == State.ENDED) return emptyList()
         if (bots.remove(botId)) respawnsDue += nowMs + t.allyRespawnS * 1000L

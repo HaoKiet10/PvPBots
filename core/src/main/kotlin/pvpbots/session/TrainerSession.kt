@@ -51,6 +51,15 @@ class TrainerSession(private val owner: UUID, private val area: AreaRef, private
         return emptyList()
     }
 
+    /**
+     * The spawn requested by [slotGranted] failed. Clears the pending-spawn flag, stays QUEUED and
+     * returns empty; the director releases the slot and later re-requests one.
+     */
+    fun spawnFailed(nowMs: Long): List<Effect> {
+        spawnPending = false
+        return emptyList()
+    }
+
     fun ownerLeft(): List<Effect> {
         if (state == State.ENDED) return emptyList()
         val out = mutableListOf<Effect>(Effect.CancelSlotRequests(key))
