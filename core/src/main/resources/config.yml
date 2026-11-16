@@ -1,0 +1,109 @@
+# PvP Bots configuration. Enum values are case-insensitive; '-' and '_' are interchangeable.
+
+max-bots: 100
+
+trainer:
+  countdown-seconds: 3
+  time-limit-seconds: 300
+  rematch-delay-seconds: 5
+
+ally:
+  respawn-seconds: 15
+  leave-grace-seconds: 10
+
+bot:
+  view-distance: 2            # minimum chunks kept loaded around a bot
+  stuck-retry-seconds: 5
+  stuck-teleport-seconds: 10
+
+# Signed skin textures, filled in by a later task: list of { value: "...", signature: "..." }
+skins: []
+
+difficulties:
+  easy:
+    reaction-ticks: 8
+    aim-error: 12
+    turn-speed: 15
+    cooldown-min: 0.6
+    cooldown-max: 1.0
+    crits: never
+    w-tap: false
+    strafe: none
+    shield: none
+    heal-at: 0                # fraction of max health below which the bot eats; 0 = never
+    totem: false
+    kit: starter
+  medium:
+    reaction-ticks: 5
+    aim-error: 7
+    turn-speed: 25
+    cooldown-min: 0.85
+    cooldown-max: 0.85
+    crits: sometimes
+    w-tap: false
+    strafe: simple
+    shield: basic
+    heal-at: 0.30
+    totem: false
+    kit: iron
+  hard:
+    reaction-ticks: 3
+    aim-error: 3
+    turn-speed: 40
+    cooldown-min: 0.95
+    cooldown-max: 0.95
+    crits: often
+    w-tap: true
+    strafe: full
+    shield: full
+    heal-at: 0.40
+    totem: true
+    kit: diamond
+  pro:
+    reaction-ticks: 2
+    aim-error: 1
+    turn-speed: 60
+    cooldown-min: 1.0
+    cooldown-max: 1.0
+    crits: always
+    w-tap: true
+    strafe: randomised
+    shield: full-axe
+    heal-at: 0.40
+    totem: true
+    kit: netherite
+
+# Every kit has the same shape. Absent/null entries mean "not given" (starter has only armor + sword).
+kits:
+  starter:
+    armor: [LEATHER_HELMET, LEATHER_CHESTPLATE, LEATHER_LEGGINGS, LEATHER_BOOTS]
+    sword: STONE_SWORD
+    axe: null
+    food: null
+    shield: false
+    bow: null
+    arrows: 0
+  iron:
+    armor: [IRON_HELMET, IRON_CHESTPLATE, IRON_LEGGINGS, IRON_BOOTS]
+    sword: IRON_SWORD
+    axe: IRON_AXE
+    food: { item: GOLDEN_APPLE, amount: 4 }
+    shield: true
+    bow: BOW
+    arrows: 16
+  diamond:
+    armor: [DIAMOND_HELMET, DIAMOND_CHESTPLATE, DIAMOND_LEGGINGS, DIAMOND_BOOTS]
+    sword: DIAMOND_SWORD
+    axe: DIAMOND_AXE
+    food: { item: GOLDEN_APPLE, amount: 6 }
+    shield: true
+    bow: BOW
+    arrows: 16
+  netherite:
+    armor: [NETHERITE_HELMET, NETHERITE_CHESTPLATE, NETHERITE_LEGGINGS, NETHERITE_BOOTS]
+    sword: NETHERITE_SWORD
+    axe: NETHERITE_AXE
+    food: { item: GOLDEN_APPLE, amount: 8 }
+    shield: true
+    bow: BOW
+    arrows: 16
