@@ -2,6 +2,7 @@ build/
 .gradle/
 .kotlin/
 run/
+run-selftest/
 *.iml
 .idea/
 .superpowers/

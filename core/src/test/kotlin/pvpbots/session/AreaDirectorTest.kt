@@ -288,4 +288,18 @@ class AreaDirectorTest {
         assertEquals(0, slots.used())
         assertEquals(0, slots.queued())
     }
+
+    @Test fun sessionCounts_trackTrainersAndSquads() {
+        director(10)
+        enter(P1, ARENA)
+        enter(P2, ARENA)
+        enter(P3, BOSS)
+        assertEquals(2, d.trainerCount())
+        assertEquals(1, d.squadCount())
+        d.onAreaChange(P1, ARENA, null, 1)
+        assertEquals(1, d.trainerCount())
+        d.shutdown()
+        assertEquals(0, d.trainerCount())
+        assertEquals(0, d.squadCount())
+    }
 }

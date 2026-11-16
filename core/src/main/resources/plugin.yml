@@ -1,0 +1,20 @@
+name: PvpBots
+version: '${version}'
+main: pvpbots.bukkit.PvpBotsPlugin
+api-version: '1.21'
+description: Hidden fake-player PvP trainers and boss-area ally squads.
+depend: [WorldGuard]
+libraries:
+  - org.jetbrains.kotlin:kotlin-stdlib:${kotlinVersion}
+commands:
+  pvpbots:
+    description: PvP bots administration.
+    usage: /pvpbots <status|reload|clear|selftest <trainer|ally|load N>>
+    permission: pvpbots.admin
+permissions:
+  pvpbots.admin:
+    description: Use /pvpbots status, reload and clear.
+    default: op
+  pvpbots.debug:
+    description: Use /pvpbots selftest.
+    default: op

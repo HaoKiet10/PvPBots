@@ -98,6 +98,12 @@ class AreaDirector(private val slots: BotSlots, private val port: BotPort, priva
 
     fun sessionOfBot(botId: UUID): SessionKey? = alive[botId]
 
+    /** Live trainer sessions (any state but ENDED-and-pruned), for status output. */
+    fun trainerCount(): Int = trainers.size
+
+    /** Live ally squads, for status output. */
+    fun squadCount(): Int = squads.size
+
     fun fighting(botId: UUID): Boolean = when (val key = alive[botId]) {
         is SessionKey.Squad -> true
         is SessionKey.Trainer -> trainers[key.owner]?.fighting() == true
