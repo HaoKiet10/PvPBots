@@ -34,8 +34,7 @@ class AllySquad(private val area: AreaRef, private val t: Timings) {
     }
 
     fun playerLeft(player: UUID, nowMs: Long): List<Effect> {
-        if (state != State.ACTIVE) return emptyList()
-        players -= player
+        if (state != State.ACTIVE || !players.remove(player)) return emptyList()
         if (players.isEmpty()) {
             state = State.GRACE
             graceStartMs = nowMs
@@ -43,14 +42,20 @@ class AllySquad(private val area: AreaRef, private val t: Timings) {
         return emptyList()
     }
 
+    /** Emits one [Effect.SpawnBot] while ACTIVE/GRACE; empty when ENDED (the director releases the slot). */
     fun slotGranted(nowMs: Long): List<Effect> {
         if (state == State.ENDED) return emptyList()
         val near = players.firstOrNull() ?: lastPlayer ?: return emptyList()
         return listOf(Effect.SpawnBot(key, Role.ALLY, area.difficulty, near))
     }
 
+    /**
+     * A bot requested via [slotGranted] now exists. Tracked while ACTIVE/GRACE; once ENDED it is
+     * unwanted, so returns `[Effect.RemoveBot(botId)]` as cleanup and changes nothing else.
+     */
     fun botSpawned(botId: UUID, nowMs: Long): List<Effect> {
-        if (state != State.ENDED) bots += botId
+        if (state == State.ENDED) return listOf(Effect.RemoveBot(botId))
+        bots += botId
         return emptyList()
     }
 

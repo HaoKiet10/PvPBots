@@ -98,4 +98,17 @@ class AllySquadTest {
         assertTrue(q.tick(99_000).isEmpty())
         assertEquals(ENDED, q.state())
     }
+
+    @Test fun botSpawnedAfterEnd_removed() {
+        val q = squadWithBots(); q.playerLeft(P1, 0); q.tick(10_000)
+        val late = UUID.fromString("00000000-0000-0000-0000-0000000000b9")
+        assertEquals(listOf(Effect.RemoveBot(late)), q.botSpawned(late, 11_000))
+        assertTrue(q.bots().isEmpty())
+    }
+
+    @Test fun playerLeftUnknown_noChange() {
+        val q = squad(2); q.playerEntered(P1, 0)
+        assertTrue(q.playerLeft(P2, 1).isEmpty())
+        assertEquals(ACTIVE, q.state())
+    }
 }

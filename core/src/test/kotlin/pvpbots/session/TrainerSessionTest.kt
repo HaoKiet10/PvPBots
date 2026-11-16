@@ -66,7 +66,7 @@ class TrainerSessionTest {
     @Test fun endedIgnoresLateEvents() {
         val s = trainer(); s.start(0); s.ownerLeft()
         assertTrue(s.slotGranted(5).isEmpty())
-        assertTrue(s.botSpawned(BOT, 6).isEmpty())
+        assertEquals(listOf(Effect.RemoveBot(BOT)), s.botSpawned(BOT, 6))
         assertTrue(s.tick(10_000_000).isEmpty())
         assertEquals(ENDED, s.state())
         assertNull(s.botId())
@@ -120,6 +120,46 @@ class TrainerSessionTest {
         assertEquals(listOf(Effect.CancelSlotRequests(KEY), Effect.RemoveBot(BOT)), s.ownerLeft())
         assertEquals(ENDED, s.state())
         assertTrue(s.ownerLeft().isEmpty())
+    }
+
+    private val BOT2 = UUID.fromString("00000000-0000-0000-0000-0000000000b2")
+
+    @Test fun duplicateSlotGranted_secondEmpty() {
+        val s = trainer(); s.start(0)
+        assertEquals(1, s.slotGranted(0).size)
+        assertTrue(s.slotGranted(1).isEmpty())
+    }
+
+    @Test fun botSpawnedAfterOwnerLeft_removed() {
+        val s = trainer(); s.start(0); s.slotGranted(0); s.ownerLeft()
+        assertEquals(listOf(Effect.RemoveBot(BOT)), s.botSpawned(BOT, 5))
+        assertEquals(ENDED, s.state())
+        assertNull(s.botId())
+    }
+
+    @Test fun secondBotSpawnedInCountdown_removed_originalKept() {
+        val s = trainer(); s.start(0); s.slotGranted(0); s.botSpawned(BOT, 0)
+        assertEquals(listOf(Effect.RemoveBot(BOT2)), s.botSpawned(BOT2, 1))
+        assertEquals(BOT, s.botId())
+        assertEquals(COUNTDOWN, s.state())
+    }
+
+    @Test fun botSpawnedWithoutPendingSpawn_removed() {
+        val s = trainer(); s.start(0)
+        assertEquals(listOf(Effect.RemoveBot(BOT)), s.botSpawned(BOT, 0))
+        assertEquals(QUEUED, s.state())
+    }
+
+    @Test fun startTwice_secondEmpty() {
+        val s = trainer()
+        assertEquals(1, s.start(0).size)
+        assertTrue(s.start(1).isEmpty())
+        assertEquals(QUEUED, s.state())
+    }
+
+    @Test fun rematchAllowsNewSpawn() {
+        val s = fighting(); s.botDied(10_000); s.tick(15_000)
+        assertEquals(1, s.slotGranted(15_000).size)
     }
 
     @Test fun messagesAreExact() {
