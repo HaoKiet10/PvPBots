@@ -1,0 +1,6 @@
+name: Spike
+version: 0.0.1
+main: spike.SpikePlugin
+api-version: '1.21'
+libraries:
+  - org.jetbrains.kotlin:kotlin-stdlib:2.4.21
