@@ -102,12 +102,12 @@ class SelfTest(
 
     private fun step() {
         if (finished) return
-        keepDummiesAlive()
-        if (wait > 0) {
-            wait--
-            return
-        }
         try {
+            keepDummiesAlive()
+            if (wait > 0) {
+                wait--
+                return
+            }
             val s = script ?: return
             if (s.hasNext()) wait = (s.next() - 1).coerceAtLeast(0) else finish(restoreDirector = true)
         } catch (e: Throwable) {

@@ -9,7 +9,12 @@ import org.bukkit.command.TabCompleter
 class AdminCommand(private val plugin: PvpBotsPlugin) : CommandExecutor, TabCompleter {
 
     override fun onCommand(sender: CommandSender, command: Command, label: String, args: Array<out String>): Boolean {
-        when (args.firstOrNull()?.lowercase()) {
+        val sub = args.firstOrNull()?.lowercase()
+        if (sub in ADMIN_SUBCOMMANDS && !sender.hasPermission("pvpbots.admin")) {
+            sender.sendMessage("You need pvpbots.admin for /pvpbots $sub.")
+            return true
+        }
+        when (sub) {
             "status" -> status(sender)
             "reload" -> {
                 plugin.reload()
@@ -69,5 +74,9 @@ class AdminCommand(private val plugin: PvpBotsPlugin) : CommandExecutor, TabComp
             else -> emptyList()
         }
         return options.filter { it.startsWith(args.last(), ignoreCase = true) }
+    }
+
+    private companion object {
+        val ADMIN_SUBCOMMANDS = setOf("status", "reload", "clear")
     }
 }

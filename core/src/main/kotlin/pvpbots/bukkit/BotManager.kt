@@ -120,11 +120,7 @@ class BotManager(
 
     override fun remove(botId: UUID) {
         val r = bots.remove(botId) ?: return
-        try {
-            adapter.remove(r.handle)
-        } catch (e: Exception) {
-            logger.log(Level.WARNING, "Removing bot ${r.player.name} failed", e)
-        }
+        TickIsolation.guard({ adapter.remove(r.handle) }) { e -> logger.log(Level.WARNING, "Removing bot ${r.handle} failed", e) }
     }
 
     override fun title(player: UUID, text: String) {
@@ -136,31 +132,29 @@ class BotManager(
         Bukkit.getPlayer(player)?.sendActionBar(Component.text(text))
     }
 
-    /** Ticks every bot's controller. A bot whose tick throws is treated as dead (logged once, no win title). */
+    /**
+     * Ticks every bot's controller. A bot whose tick throws anything (exceptions and LinkageErrors from the adapter
+     * alike) is logged once and dropped as if it died (no win title); the other bots still tick.
+     */
     fun tickBots(tick: Long) {
         val start = System.nanoTime()
-        for (r in bots.values.toList()) {
-            if (bots[r.id] !== r) continue // removed by an earlier bot's tick
-            try {
-                r.controller.tick(tick)
-            } catch (e: Exception) {
-                logger.log(Level.SEVERE, "Bot ${r.player.name} (session ${r.key}) failed and was removed", e)
-                failed(r.id)
-            }
+        TickIsolation.forEach(bots.values.toList(), { r ->
+            if (bots[r.id] === r) r.controller.tick(tick) // skip bots removed by an earlier bot's tick
+        }) { r, e ->
+            logger.log(Level.SEVERE, "Bot ${r.handle} (session ${r.key}) failed and was removed", e)
+            failed(r.id)
         }
         tickNanos[tickSamples % tickNanos.size] = System.nanoTime() - start
         tickSamples++
     }
 
-    /** Ends a bot as if it died, but without the "You won!" title. */
+    /** Ends a bot as if it died, but without the "You won!" title. The bot is always removed. */
     private fun failed(botId: UUID) {
         suppressTitles = true
-        try {
-            director.onBotDeath(botId, nowMs())
-        } finally {
-            suppressTitles = false
-        }
-        remove(botId)
+        TickIsolation.endFailed(
+            notify = { director.onBotDeath(botId, nowMs()) },
+            remove = { suppressTitles = false; remove(botId) },
+        ) { e -> logger.log(Level.SEVERE, "Ending the session of failed bot $botId threw", e) }
     }
 
     /** Removes every bot immediately (used after director.shutdown(), which should already have done it). */

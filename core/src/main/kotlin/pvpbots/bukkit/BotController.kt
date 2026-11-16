@@ -85,7 +85,9 @@ class BotController(
 
     fun tick(tick: Long) {
         val bot = handle.bukkit
-        if (bot.isDead || bot.world.name != area.world) {
+        // Left its area's world (e.g. teleported by another plugin): it can never get back, so it ends like a failure.
+        check(bot.world.name == area.world) { "bot is in world ${bot.world.name}, its area is in ${area.world}" }
+        if (bot.isDead) { // the death listener removes it next tick
             adapter.setInput(handle, BotInput(0f, 0f, false, false, false, look.yaw, look.pitch))
             return
         }

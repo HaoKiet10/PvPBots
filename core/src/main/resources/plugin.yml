@@ -10,7 +10,6 @@ commands:
   pvpbots:
     description: PvP bots administration.
     usage: /pvpbots <status|reload|clear|selftest <trainer|ally|load N>>
-    permission: pvpbots.admin
 permissions:
   pvpbots.admin:
     description: Use /pvpbots status, reload and clear.

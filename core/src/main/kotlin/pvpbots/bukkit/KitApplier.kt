@@ -93,10 +93,11 @@ class KitApplier(val kits: Map<String, Kit>) {
             }
             var food: Material? = null
             var foodAmount = 0
-            when (val f = m["food"]) {
-                null, false -> {}
-                is String -> { food = material("food", f); foodAmount = 1 }
-                is Map<*, *> -> {
+            val f = m["food"]
+            when {
+                absent(f) -> {}
+                f is String -> { food = material("food", f); foodAmount = 1 }
+                f is Map<*, *> -> {
                     food = material("food.item", f["item"])
                     foodAmount = (f["amount"] as? Number)?.toInt() ?: 1
                     if (foodAmount <= 0) food = null
@@ -107,14 +108,16 @@ class KitApplier(val kits: Map<String, Kit>) {
                 warnings += "$path.food: $food is not edible, ignored"
                 food = null
             }
-            val shield = when (val s = m["shield"]) {
-                null, false -> false
-                true -> true
+            val s = m["shield"]
+            val shield = when {
+                absent(s) -> false
+                s == true -> true
                 else -> { warnings += "$path.shield: expected true or false, ignored"; false }
             }
-            val arrows = when (val a = m["arrows"]) {
-                null, false -> 0
-                is Number -> a.toInt().coerceAtLeast(0)
+            val a = m["arrows"]
+            val arrows = when {
+                absent(a) -> 0
+                a is Number -> a.toInt().coerceAtLeast(0)
                 else -> { warnings += "$path.arrows: expected a number, ignored"; 0 }
             }
             return Kit(
