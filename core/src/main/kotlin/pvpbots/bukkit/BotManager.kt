@@ -34,6 +34,9 @@ data class BotRecord(
 ) {
     val id: UUID get() = handle.id
     val player: Player get() = handle.bukkit
+
+    /** Set when removing the entity failed: the bot stays registered (still a bot), is not ticked, and removal is retried. */
+    var removeFailedAtTick = -1L
 }
 
 /**
@@ -66,8 +69,8 @@ class BotManager(
     /** Total wall time spent in [spawn] since start (self-test measurements read differences of it). */
     var spawnNanos = 0L
         private set
-    private var suppressTitles = false
     private var distanceWarned = false
+    private val failureLog = FailureLog()
 
     override fun isBot(id: UUID): Boolean = id in bots
 
@@ -125,23 +128,39 @@ class BotManager(
                 bots[handle.id] = record
                 spawnObserver?.invoke(record)
                 return handle.id
-            } catch (e: Exception) {
-                runCatching { adapter.remove(handle) }
+            } catch (e: VirtualMachineError) {
+                throw e
+            } catch (e: Throwable) {
+                // The entity exists but the bot is unusable: never leave it in the world outside the registry.
+                bots.remove(handle.id)
+                TickIsolation.guard({ adapter.remove(handle) }) { r -> e.addSuppressed(r) }
                 throw e
             }
-        } catch (e: Exception) {
-            logger.log(Level.WARNING, "Bot spawn failed for session $key in ${area.world}/${area.regionId}", e)
+        } catch (e: VirtualMachineError) {
+            throw e
+        } catch (e: Throwable) {
+            logFailure(e, "Bot spawn failed for session $key in ${area.world}/${area.regionId}")
             return null
         }
     }
 
+    /**
+     * Removes the entity first, then drops the registry entry. If the adapter fails, the entry stays (the entity is
+     * still treated as a bot, not ticked) and [tickBots] retries the removal every second.
+     */
     override fun remove(botId: UUID) {
-        val r = bots.remove(botId) ?: return
-        TickIsolation.guard({ adapter.remove(r.handle) }) { e -> logger.log(Level.WARNING, "Removing bot ${r.handle} failed", e) }
+        val r = bots[botId] ?: return
+        var ok = true
+        TickIsolation.guard({ adapter.remove(r.handle) }) { e ->
+            ok = false
+            logFailure(e, "Removing bot ${r.handle} failed; retrying every second")
+        }
+        if (ok) bots.remove(botId) else r.removeFailedAtTick = Bukkit.getCurrentTick().toLong()
     }
 
+    override fun isDead(player: UUID): Boolean = Bukkit.getPlayer(player)?.isDead == true
+
     override fun title(player: UUID, text: String) {
-        if (suppressTitles) return
         Bukkit.getPlayer(player)?.showTitle(Title.title(Component.text(text), Component.empty()))
     }
 
@@ -156,9 +175,13 @@ class BotManager(
     fun tickBots(tick: Long) {
         val start = System.nanoTime()
         TickIsolation.forEach(bots.values.toList(), { r ->
-            if (bots[r.id] === r) r.controller.tick(tick) // skip bots removed by an earlier bot's tick
+            when {
+                bots[r.id] !== r -> {} // removed by an earlier bot's tick
+                r.removeFailedAtTick >= 0 -> if (tick - r.removeFailedAtTick >= 20) remove(r.id)
+                else -> r.controller.tick(tick)
+            }
         }) { r, e ->
-            logger.log(Level.SEVERE, "Bot ${r.handle} (session ${r.key}) failed and was removed", e)
+            logFailure(e, "Bot ${r.handle} (session ${r.key}) failed and was removed", Level.SEVERE)
             failed(r.id)
         }
         lastTickNanos = System.nanoTime() - start
@@ -166,13 +189,27 @@ class BotManager(
         tickSamples++
     }
 
-    /** Ends a bot as if it died, but without the "You won!" title. The bot is always removed. */
+    /** Ends a bot as if it died, but without a win title (the director counts the failure). The bot is always removed. */
     private fun failed(botId: UUID) {
-        suppressTitles = true
         TickIsolation.endFailed(
-            notify = { director.onBotDeath(botId, nowMs()) },
-            remove = { suppressTitles = false; remove(botId) },
-        ) { e -> logger.log(Level.SEVERE, "Ending the session of failed bot $botId threw", e) }
+            notify = { director.onBotFailed(botId, nowMs()) },
+            remove = { remove(botId) },
+        ) { e -> logFailure(e, "Ending the session of failed bot $botId threw", Level.SEVERE) }
+    }
+
+    /**
+     * Logs [e] with its stack trace the first time its signature (class + top plugin frame) is seen; repeats are
+     * counted and summarised in one WARNING line at most once per minute.
+     */
+    private fun logFailure(e: Throwable, context: String, level: Level = Level.WARNING) {
+        when (val a = failureLog.record(e, System.currentTimeMillis())) {
+            FailureLog.Action.Full -> logger.log(level, context, e)
+            is FailureLog.Action.Summary -> logger.warning(
+                "$context: ${FailureLog.signature(e)}: ${a.sinceLast} more time(s) since the last report " +
+                    "(${a.total} total; stack trace logged the first time)",
+            )
+            FailureLog.Action.Silent -> {}
+        }
     }
 
     /** Removes every bot immediately (used after director.shutdown(), which should already have done it). */
@@ -187,6 +224,9 @@ class BotManager(
         // Nobody reads a bot's chunk packets (its connection drops them): send distance 0 stops Paper from building
         // and "sending" chunks to it. Chunks around the bot still load and tick (view/simulation distance above).
         val send = runCatching { p.sendViewDistance = 0 }
+        // Bots must not block night skipping or count for mob spawning around them.
+        runCatching { p.isSleepingIgnored = true }
+        runCatching { p.affectsSpawning = false }
         if ((view.isFailure || sim.isFailure || send.isFailure) && !distanceWarned) {
             distanceWarned = true
             logger.warning(
