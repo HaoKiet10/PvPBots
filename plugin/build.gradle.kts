@@ -45,10 +45,13 @@ tasks.assemble { dependsOn(tasks.shadowJar) }
  * A dev server: Minecraft version plus the WorldEdit / WorldGuard Bukkit builds for it, pinned by Modrinth version id
  * (the version number alone also matches WorldEdit's Fabric/NeoForge build of the same number).
  */
-data class DevServer(val minecraft: String, val worldEdit: String, val worldGuard: String)
+data class DevServer(val minecraft: String, val worldEdit: String, val worldGuard: String, val java: Int = 25)
 
 // 1.21.11: WorldEdit 7.4.6 + WorldGuard 7.0.17.
 val mc1_21_11 = DevServer("1.21.11", worldEdit = "YFnqiUlL", worldGuard = "pI4UHLJL")
+// 1.21.11 on Java 21 (the plugin's own minimum): WorldEdit 7.4.0 + WorldGuard 7.0.16, the newest builds that list
+// 1.21.11 and are still compiled for Java 21 (class file 65); 7.4.6 / 7.0.17 need Java 25.
+val mc1_21_11_java21 = DevServer("1.21.11", worldEdit = "CkT32vix", worldGuard = "EZl3moba", java = 21)
 // 26.1.2 (newest 26.1.x): WorldEdit 7.4.6 + WorldGuard 7.0.18 (Modrinth lists 26.1-26.3 for both).
 val mc26_1 = DevServer("26.1.2", worldEdit = "YFnqiUlL", worldGuard = "btHBavWa")
 // 26.2: WorldEdit 7.4.6 + WorldGuard 7.0.19 (Modrinth lists 26.2-26.3 for both).
@@ -56,9 +59,9 @@ val mc26_2 = DevServer("26.2", worldEdit = "YFnqiUlL", worldGuard = "TtfwTyi6")
 
 fun RunServer.devServer(server: DevServer) {
     minecraftVersion(server.minecraft)
-    // Paper 26.x needs Java 25; WorldEdit 7.4.x / WorldGuard 7.0.17+ are compiled for Java 25 (class file 69) too, and
-    // Paper 1.21.11 runs fine on 25.
-    javaLauncher.set(javaToolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(25)) })
+    // Paper 26.x needs Java 25; WorldEdit 7.4.6 / WorldGuard 7.0.17+ are compiled for Java 25 (class file 69) too, and
+    // Paper 1.21.11 runs fine on 25 (and on 21, see mc1_21_11_java21).
+    javaLauncher.set(javaToolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(server.java)) })
     pluginJars.from(tasks.shadowJar.flatMap { it.archiveFile })
     downloadPlugins {
         modrinth("worldedit", server.worldEdit)
@@ -124,7 +127,7 @@ fun registerSelfTest(name: String, server: DevServer, runDir: String, port: Int)
             "${hits.size}${if (hits.isEmpty()) "" else " $hits"}; usercache.json entries: $cacheHits"
         resultFile.appendText(d1 + "\n")
         val text = resultFile.readText()
-        logger.lifecycle("---- selftest-result.txt (${server.minecraft}) ----\n$text-----------------------------")
+        logger.lifecycle("---- selftest-result.txt (${server.minecraft}, Java ${server.java}) ----\n$text-----------------------------")
         val lines = text.lines()
         val failed = lines.filter { it.startsWith("FAIL") || it.startsWith("ERROR") }
         val passed = lines.count { it.startsWith("PASS") }
@@ -136,5 +139,6 @@ fun registerSelfTest(name: String, server: DevServer, runDir: String, port: Int)
 }
 
 val selfTest = registerSelfTest("selfTest", mc1_21_11, "run-selftest", 25591)
+val selfTest_1_21_11_java21 = registerSelfTest("selfTest_1_21_11_java21", mc1_21_11_java21, "run-selftest-java21", 25594)
 val selfTest_26_1 = registerSelfTest("selfTest_26_1", mc26_1, "run-selftest-26_1", 25592)
 val selfTest_26_2 = registerSelfTest("selfTest_26_2", mc26_2, "run-selftest-26_2", 25593)

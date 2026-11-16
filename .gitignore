@@ -5,6 +5,7 @@ run/
 run-selftest/
 run-selftest-26_1/
 run-selftest-26_2/
+run-selftest-java21/
 *.iml
 .idea/
 .superpowers/

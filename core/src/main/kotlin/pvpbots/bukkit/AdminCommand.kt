@@ -5,7 +5,7 @@ import org.bukkit.command.CommandExecutor
 import org.bukkit.command.CommandSender
 import org.bukkit.command.TabCompleter
 
-/** `/pvpbots status | reload | clear | selftest <trainer|ally|load N>` (admins only). */
+/** `/pvpbots status | reload | clear | selftest <trainer|ally|load N> confirm` (admins only). */
 class AdminCommand(private val plugin: PvpBotsPlugin) : CommandExecutor, TabCompleter {
 
     override fun onCommand(sender: CommandSender, command: Command, label: String, args: Array<out String>): Boolean {
@@ -23,7 +23,7 @@ class AdminCommand(private val plugin: PvpBotsPlugin) : CommandExecutor, TabComp
             "clear" -> {
                 val n = plugin.botManager.count()
                 plugin.clear()
-                sender.sendMessage("PvpBots: removed $n bot(s).")
+                sender.sendMessage("PvpBots: removed $n bot(s). Players still inside a bot region get their bots back within a few seconds.")
             }
             "selftest" -> selfTest(sender, args.drop(1))
             else -> return false
@@ -37,7 +37,7 @@ class AdminCommand(private val plugin: PvpBotsPlugin) : CommandExecutor, TabComp
         val m = plugin.botManager
         sender.sendMessage(
             "PvpBots: bots ${slots.used()}/${slots.capacity()} (live ${m.count()}), queued ${slots.queued()}, " +
-                "sessions: ${d.trainerCount()} trainer, ${d.squadCount()} squad, " +
+                "pending spawns ${d.pendingSpawns()}, sessions: ${d.trainerCount()} trainer, ${d.squadCount()} squad, " +
                 "avg bot tick ${"%.3f".format(m.averageTickMs())} ms (last 100 ticks)",
         )
     }
@@ -53,17 +53,29 @@ class AdminCommand(private val plugin: PvpBotsPlugin) : CommandExecutor, TabComp
             "load" -> {
                 val n = rest.getOrNull(1)?.toIntOrNull()
                 if (n == null || n !in 1..500) {
-                    sender.sendMessage("Usage: /pvpbots selftest load <1-500>")
+                    sender.sendMessage("Usage: /pvpbots selftest load <1-500> confirm")
                     return
                 }
                 SelfTest.Mode.Load(n)
             }
             else -> {
-                sender.sendMessage("Usage: /pvpbots selftest <trainer|ally|load N>")
+                sender.sendMessage("Usage: /pvpbots selftest <trainer|ally|load N> confirm")
                 return
             }
         }
-        sender.sendMessage("PvpBots: self-test $mode started in world ${SelfTest.WORLD}; results follow and go to selftest-result.txt.")
+        val confirmAt = if (mode is SelfTest.Mode.Load) 2 else 1
+        if (!rest.getOrNull(confirmAt).equals("confirm", ignoreCase = true)) {
+            sender.sendMessage(
+                "PvpBots: the self-test ENDS EVERY LIVE BOT SESSION on this server (all bots are removed; sessions restart " +
+                    "afterwards for players still inside a bot region) and uses temporary worlds ${SelfTest.WORLD}*. " +
+                    "Repeat with 'confirm' at the end to run it: /pvpbots selftest ${rest.take(confirmAt).joinToString(" ")} confirm",
+            )
+            return
+        }
+        sender.sendMessage(
+            "PvpBots: self-test $mode started; all live bot sessions will be ended. It runs in temporary world(s) " +
+                "${SelfTest.WORLD}* (unloaded and deleted afterwards); results follow and go to selftest-result.txt.",
+        )
         plugin.runSelfTest(mode, shutdownAfter = false) { sender.sendMessage(it) }
     }
 
@@ -71,6 +83,8 @@ class AdminCommand(private val plugin: PvpBotsPlugin) : CommandExecutor, TabComp
         val options = when (args.size) {
             1 -> listOf("status", "reload", "clear", "selftest")
             2 -> if (args[0].equals("selftest", true)) listOf("trainer", "ally", "load") else emptyList()
+            3 -> if (args[0].equals("selftest", true) && !args[1].equals("load", true)) listOf("confirm") else emptyList()
+            4 -> if (args[0].equals("selftest", true) && args[1].equals("load", true)) listOf("confirm") else emptyList()
             else -> emptyList()
         }
         return options.filter { it.startsWith(args.last(), ignoreCase = true) }

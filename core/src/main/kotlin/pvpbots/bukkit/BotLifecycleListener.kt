@@ -7,6 +7,7 @@ import org.bukkit.event.Listener
 import org.bukkit.event.entity.PlayerDeathEvent
 import org.bukkit.event.player.PlayerJoinEvent
 import org.bukkit.event.player.PlayerQuitEvent
+import org.bukkit.event.player.PlayerRespawnEvent
 
 /**
  * Deaths and quits. A dying bot drops nothing, gives no XP and has no death message; the director is told on the
@@ -43,6 +44,13 @@ class BotLifecycleListener(private val plugin: PvpBotsPlugin) : Listener {
         }
         plugin.regionWatcher.forget(id)
         plugin.director.onQuit(id, manager.nowMs())
+    }
+
+    /** A trainer is never spawned while its owner is dead; the director releases a held spawn here. */
+    @EventHandler(priority = EventPriority.MONITOR)
+    fun onRespawn(event: PlayerRespawnEvent) {
+        val id = event.player.uniqueId
+        if (!manager.isBot(id)) plugin.director.onPlayerRespawn(id, manager.nowMs())
     }
 
     @EventHandler(priority = EventPriority.HIGHEST)

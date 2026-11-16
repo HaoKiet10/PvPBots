@@ -73,6 +73,7 @@ class PvpBotsPlugin : JavaPlugin() {
         }
         tickTask = server.scheduler.runTaskTimer(this, Runnable { tick() }, 1L, 1L)
         running = true
+        logger.info("Enabled for Minecraft $version using adapter ${adapter.javaClass.simpleName}; max-bots ${botManager.config.settings.maxBots}")
 
         val mode = System.getProperty("pvpbots.selftest")?.trim().orEmpty()
         if (mode.isNotEmpty()) {
@@ -131,7 +132,7 @@ class PvpBotsPlugin : JavaPlugin() {
         newDirector(null)
     }
 
-    /** /pvpbots clear: removes every bot now (sessions restart for players still inside an area). */
+    /** /pvpbots clear: removes every bot now (sessions restart for players still inside a bot region). */
     fun clear() = newDirector(null)
 
     fun selfTestRunning(): Boolean = selfTest != null

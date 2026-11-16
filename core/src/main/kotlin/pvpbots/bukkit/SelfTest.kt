@@ -272,8 +272,8 @@ class SelfTest(
         val allNamed = names.isNotEmpty() && names.all { ALLY_NAME.matches(it) }
         check(
             "A1 squad",
-            zombiesAtStart == 4 && firstThree >= 0 && maxAllies == 3 && allNamed && cleared >= 0 && botDamage == 0.0,
-            "3 allies after $firstThree ticks (max at once $maxAllies; names $names); zombies $zombiesAtStart -> ${zombiesAlive()} " +
+            zombiesAtStart == 4 && firstThree in 0..SQUAD_SPAWN_TICKS && maxAllies == 3 && allNamed && cleared >= 0 && botDamage == 0.0,
+            "3 allies after $firstThree ticks (limit $SQUAD_SPAWN_TICKS; max at once $maxAllies; names $names); zombies $zombiesAtStart -> ${zombiesAlive()} " +
                 (if (cleared >= 0) "after $cleared ticks" else "(not cleared in 1200 ticks)") +
                 "; damage dealt by bots to dummy players ${"%.1f".format(botDamage)} (cancelled bot hits: $blocked); " +
                 "zombie damage to dummies ${"%.1f".format((damageTaken[p1.id] ?: 0.0) + (damageTaken[p2.id] ?: 0.0))}" +
@@ -346,7 +346,7 @@ class SelfTest(
         spots.forEach { respawn(it) }
         yield(5)
 
-        // Spawn burst: every session starts in this one tick.
+        // Spawn burst: every session starts in this one tick; the director spawns at most bot.spawns-per-tick per tick.
         loadRecording = true
         BotProfiler.reset()
         BotProfiler.enabled = true
@@ -354,16 +354,23 @@ class SelfTest(
         val wall0 = System.nanoTime()
         entries.forEach { (o, ar) -> director.onAreaChange(o.id, null, ar, nowMs()) }
         val burstMs = (System.nanoTime() - wall0) / 1e6
-        val spawnMs = (manager.spawnNanos - spawnNanos0) / 1e6
-        val spawned = manager.count()
-        BotProfiler.enabled = false
-        val spawnParts = BotProfiler.SpawnPart.entries.joinToString(" ") { "${it.name.lowercase()}=${"%.1f".format(BotProfiler.spawnNanos[it.ordinal] / 1e6)}" }
+        val spawnedAtOnce = manager.count()
         val spikeBot = ArrayList<Double>()
-        repeat(SPIKE_TICKS) {
+        val spawnPerTick = ArrayList<Double>()
+        var lastSpawnNanos = manager.spawnNanos
+        var allSpawnedAfter = -1
+        for (i in 1..SPIKE_TICKS) {
             yield(1)
             tendMobs(spots)
             spikeBot += manager.lastTickNanos / 1e6
+            val sn = manager.spawnNanos
+            if (sn != lastSpawnNanos) spawnPerTick += (sn - lastSpawnNanos) / 1e6
+            lastSpawnNanos = sn
+            if (allSpawnedAfter < 0 && manager.count() >= n) allSpawnedAfter = i
         }
+        val spawnMs = (manager.spawnNanos - spawnNanos0) / 1e6
+        BotProfiler.enabled = false
+        val spawnParts = BotProfiler.SpawnPart.entries.joinToString(" ") { "${it.name.lowercase()}=${"%.1f".format(BotProfiler.spawnNanos[it.ordinal] / 1e6)}" }
         val spikeMspt = msptSamples.toList()
         val spikeChunksBots = chunkLoadsBots
         val spikeChunksDummies = chunkLoadsOthers
@@ -396,8 +403,10 @@ class SelfTest(
                 "${stats(botMs)} (budget avg <= $LOAD_BUDGET_MS ms); server MSPT ${stats(mspt)} (${mspt.size} ticks)",
         )
         info(
-            "L1 spawn burst: $spawned bots spawned in one tick, director+spawn calls ${"%.1f".format(burstMs)} ms " +
-                "(BotManager.spawn ${"%.1f".format(spawnMs)} ms: $spawnParts); next $SPIKE_TICKS ticks: server MSPT ${stats(spikeMspt)}, " +
+            "L1 spawn burst: ${entries.size} sessions started in one tick (director calls ${"%.1f".format(burstMs)} ms, " +
+                "$spawnedAtOnce bots spawned inside those calls); spawns-per-tick ${manager.config.settings.spawnsPerTick}: all $n bots live after " +
+                "$allSpawnedAfter ticks; BotManager.spawn total ${"%.1f".format(spawnMs)} ms ($spawnParts) over ${spawnPerTick.size} ticks, " +
+                "per tick ${stats(spawnPerTick)}; next $SPIKE_TICKS ticks: server MSPT ${stats(spikeMspt)}, " +
                 "first 5 ticks ${spikeMspt.take(5).joinToString(" ") { "%.1f".format(it) }}; bot work ${stats(spikeBot)}; " +
                 "chunk sends (PlayerChunkLoadEvent) to bots $spikeChunksBots, to dummies $spikeChunksDummies",
         )
@@ -587,6 +596,7 @@ class SelfTest(
         for (h in dummies.toList()) runCatching { manager.adapter.remove(h) }
         dummies.clear()
         if (restoreDirector) runCatching { plugin.newDirector(null) }
+        if (mayShutdown) unloadWorlds()
 
         lines += "DONE $passed/${passed + failed} checks passed"
         report(lines.last())
@@ -598,12 +608,26 @@ class SelfTest(
         if (shutdownAfter && mayShutdown) Bukkit.getScheduler().runTask(plugin, Runnable { Bukkit.shutdown() })
     }
 
+    /** Unloads (without saving) and deletes every `pvpbots_selftest*` world, so a live server is left as it was. */
+    private fun unloadWorlds() {
+        val results = Bukkit.getWorlds().filter { it.name.startsWith(WORLD) }.map { w ->
+            val name = w.name
+            val folder = w.worldFolder
+            val unloaded = runCatching { Bukkit.unloadWorld(w, false) }.getOrDefault(false)
+            val deleted = unloaded && runCatching { folder.deleteRecursively() }.getOrDefault(false)
+            "$name unloaded=$unloaded deleted=$deleted"
+        }
+        if (results.isNotEmpty()) info("test worlds: ${results.joinToString("; ")}")
+    }
+
     companion object {
         const val WORLD = "pvpbots_selftest"
         const val RESULT_FILE = "selftest-result.txt"
         const val BOTS_FILE = "selftest-bots.txt"
         private const val LOAD_TICKS = 1200
         private const val SPIKE_TICKS = 100
+        /** A squad of 3 is spawned 2 per tick (bot.spawns-per-tick default); allow a few ticks of slack. */
+        private const val SQUAD_SPAWN_TICKS = 10
         private const val RESPAWN_TICKS = 20
         private const val LOAD_BUDGET_MS = 10.0
         private val TRAINER_NAME = Regex("^Trainer_[0-9a-f]{4}$")
