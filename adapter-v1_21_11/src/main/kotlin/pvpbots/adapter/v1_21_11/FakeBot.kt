@@ -103,6 +103,10 @@ internal class FakeBot private constructor(
             bot.advancements.stopListening()
             bot.absSnapTo(at.x, at.y, at.z, at.yaw, at.pitch)
             bot.yHeadRot = at.yaw
+            // Paper: PlayerList.placeNewPlayer sets this; without it Moonrise's player chunk loader ignores the bot,
+            // so chunks around it are never loaded/entity-ticking (mobs it fights freeze, keep hurt cooldowns) and
+            // its per-player view/simulation distance is not applied. Only the chunk loader reads this flag.
+            bot.isRealPlayer = true
             level.addNewPlayer(bot)
             if (bot.isRemoved || level.getEntity(spec.uuid) !== bot) {
                 bot.botRemoved = true

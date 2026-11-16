@@ -75,6 +75,9 @@ class SelfTest(
     private val damageFromBots = HashMap<UUID, Double>()
     private val blockedFromBots = HashMap<UUID, Int>()
     private val firstDamageTick = HashMap<UUID, Long>()
+    private var zombieHits = 0
+    private var zombieHitsCancelled = 0
+    private var zombieDamage = 0.0
     private var task: BukkitTask? = null
     private var script: Iterator<Int>? = null
     private var wait = 0
@@ -152,7 +155,7 @@ class SelfTest(
                 "T1 trainer spawns",
                 TRAINER_NAME.matches(name) && !inOnline && !viaGetPlayer && apiBot,
                 "$name after $spawnTicks ticks; in getOnlinePlayers=$inOnline, Bukkit.getPlayer!=null=$viaGetPlayer, " +
-                    "PvpBotsApi.isBot=$apiBot; view/sim distance ${bot.player.viewDistance}/${bot.player.simulationDistance}; " +
+                    "PvpBotsApi.isBot=$apiBot; " +
                     "${"%.1f".format(bot.player.location.distance(owner.bukkit.location))} blocks from owner",
             )
 
@@ -174,7 +177,9 @@ class SelfTest(
                 "T3 fights",
                 first != null && first - fightTick <= 600,
                 (first?.let { "owner first hurt ${it - fightTick} ticks into the fight; " } ?: "owner never hurt in 600 ticks; ") +
-                    "owner damage total ${"%.1f".format(damageTaken[owner.id] ?: 0.0)}",
+                    "owner damage total ${"%.1f".format(damageTaken[owner.id] ?: 0.0)}; " +
+                    "bot view/sim distance ${bot.player.viewDistance}/${bot.player.simulationDistance}; " +
+                    "owner valid=${owner.bukkit.isValid}; bot: ${trainerBot(key)?.controller?.debugSummary()}",
             )
             val bystanderBefore = damageTaken[bystander.id] ?: 0.0
             val blockedBefore = blockedFromBots[bystander.id] ?: 0
@@ -265,7 +270,10 @@ class SelfTest(
             "3 allies after $firstThree ticks (max at once $maxAllies; names $names); zombies $zombiesAtStart -> ${zombiesAlive()} " +
                 (if (cleared >= 0) "after $cleared ticks" else "(not cleared in 1200 ticks)") +
                 "; damage dealt by bots to dummy players ${"%.1f".format(botDamage)} (cancelled bot hits: $blocked); " +
-                "zombie damage to dummies ${"%.1f".format((damageTaken[p1.id] ?: 0.0) + (damageTaken[p2.id] ?: 0.0))}",
+                "zombie damage to dummies ${"%.1f".format((damageTaken[p1.id] ?: 0.0) + (damageTaken[p2.id] ?: 0.0))}" +
+                "; zombie damage events applied $zombieHits (${"%.1f".format(zombieDamage)} hp), cancelled $zombieHitsCancelled; zombies: " +
+                zombies.joinToString(" ") { "[hp ${"%.1f".format(it.health)} lived ${it.ticksLived} ${it.location.chunk.loadLevel} valid ${it.isValid}]" } +
+                (if (cleared < 0) "; bots: " + manager.records().filter { it.key == squadKey }.joinToString(" | ") { it.player.name + " " + it.controller.debugSummary() } else ""),
         )
 
         // A2: grace period (leave-grace-seconds, 10 s = 200 ticks)
@@ -402,6 +410,10 @@ class SelfTest(
     @EventHandler(priority = EventPriority.MONITOR)
     fun onDamage(event: EntityDamageEvent) {
         val id = event.entity.uniqueId
+        if (zombies.any { it.uniqueId == id }) {
+            if (event.isCancelled) zombieHitsCancelled++ else { zombieHits++; zombieDamage += event.finalDamage }
+            return
+        }
         if (dummies.none { it.id == id }) return
         val byBot = (event as? EntityDamageByEntityEvent)?.let { botDamager(it.damager) } == true
         if (event.isCancelled) {

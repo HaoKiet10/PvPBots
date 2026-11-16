@@ -55,7 +55,7 @@ class BotController(
     private val adapter get() = manager.adapter
 
     private var look = initialLook
-    private var lastRefresh = Long.MIN_VALUE
+    private var lastRefresh = NEVER
     private var target: LivingEntity? = null
     private var targetView: TargetView? = null
     private var followPos: Vec3? = null
@@ -65,9 +65,23 @@ class BotController(
     private var path: List<BlockPos> = emptyList()
     private var pathIndex = 0
     private var pathGoal: Vec3? = null
-    private var pathTick = Long.MIN_VALUE
+    private var pathTick = NEVER
     private var retried = false
     private var pendingRelease = false
+
+    // Diagnostics (self-test / debugging): counts since spawn.
+    private var statTicks = 0
+    private var statNoTarget = 0
+    private var statAttackIntents = 0
+    private var statHits = 0
+    private var statMinDist = Double.MAX_VALUE
+    private var statLastIntent: Intent? = null
+
+    /** One-line diagnostic summary of this bot's behaviour so far. */
+    fun debugSummary(): String =
+        "ticks=$statTicks noTarget=$statNoTarget attackIntents=$statAttackIntents fairHits=$statHits " +
+            "minDist=${if (statMinDist == Double.MAX_VALUE) "-" else "%.2f".format(statMinDist)} " +
+            "cooldown=${"%.2f".format(handle.bukkit.attackCooldown)} look=$look last=$statLastIntent"
 
     fun tick(tick: Long) {
         val bot = handle.bukkit
@@ -85,6 +99,9 @@ class BotController(
             lastRefresh = tick
         }
         val perception = PerceptionBuilder.perceive(bot, look, targetView, reachable, followPos)
+        statTicks++
+        val tv = targetView
+        if (tv == null) statNoTarget++ else statMinDist = minOf(statMinDist, (tv.pos - perception.pos).length())
         var intent = if (manager.director.fighting(handle.id)) {
             if (role == Role.TRAINER) TrainerBrain.decide(perception, profile, brain, rng)
             else AllyBrain.decide(perception, profile, brain, rng)
@@ -116,6 +133,7 @@ class BotController(
         val sprint = intent.style == MoveStyle.APPROACH_SPRINT
         adapter.setInput(handle, BotInput(move.forward, move.strafe, jump, sprint, false, look.yaw, look.pitch))
 
+        statLastIntent = intent
         act(intent, perception)
     }
 
@@ -178,13 +196,13 @@ class BotController(
             Verdict.OK -> retried = false
             Verdict.RETRY -> if (!retried) {
                 retried = true
-                pathTick = Long.MIN_VALUE
+                pathTick = NEVER
                 return true
             }
             Verdict.TELEPORT -> {
                 teleportNear(goal)
                 stuck.reset(); retried = false
-                pathTick = Long.MIN_VALUE
+                pathTick = NEVER
             }
         }
         return false
@@ -243,8 +261,10 @@ class BotController(
         when (intent.action) {
             Action.NONE -> {}
             Action.ATTACK -> {
+                statAttackIntents++
                 val t = target?.takeIf { it.isValid && !it.isDead }
                 if (t != null && FairHit.hits(p.eye, look, aabb(t.boundingBox), PerceptionBuilder.REACH)) {
+                    statHits++
                     adapter.attack(handle, t) // attack before swing: swing resets the attack cooldown
                 }
                 adapter.swing(handle)
@@ -267,6 +287,9 @@ class BotController(
 
     private companion object {
         const val REPATH_TICKS = 10
+
+        /** "Long ago" for tick timestamps; not Long.MIN_VALUE, since `tick - MIN_VALUE` overflows. */
+        const val NEVER = -1_000_000_000L
         const val STUCK_MIN_DIST = 3.5
     }
 }
