@@ -8,7 +8,8 @@ kotlin { jvmToolchain(21) }
 dependencies {
     implementation(project(":core"))
     implementation(project(":adapter-api"))
-    // Later tasks: implementation(project(":adapter-v1_21_11", configuration = "reobf")) etc.
+    // Paper 1.21.11+ runs Mojang-mapped: shadow the plain (Mojang-mapped) adapter jars, not a reobf variant.
+    implementation(project(":adapter-v1_21_11"))
 }
 
 tasks.shadowJar {
