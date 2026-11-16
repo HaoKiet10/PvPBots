@@ -297,6 +297,7 @@ bot:
   view-distance: 2          # minimum chunks kept loaded around a bot
   simulation-distance: 2
   stuck-teleport-seconds: 10
+  spawns-per-tick: 2        # (added in the final review, R11) max bots spawned per server tick; the rest wait FIFO
 
 skins:                       # signed texture value + signature pairs
   - value: "..."
@@ -319,7 +320,11 @@ kits:                      # starter, diamond, netherite follow the same shape
 
 - `/pvpbots status` — active bots, sessions, queue, cap, average bot tick time
 - `/pvpbots reload` — reload config (ends all sessions first)
-- `/pvpbots clear` — remove every bot now
+- `/pvpbots clear` — remove every bot now (bots come back for players still inside bot regions)
+- `/pvpbots selftest <trainer|ally|load N> confirm` — developer self-test (`pvpbots.debug`); ends all live sessions
+
+The admin-facing documentation (install, flags, every config key, commands, permissions, limitations) is
+[docs/ADMIN.md](../../ADMIN.md).
 
 ---
 
