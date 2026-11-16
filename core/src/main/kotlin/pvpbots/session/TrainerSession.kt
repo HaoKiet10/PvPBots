@@ -73,6 +73,9 @@ class TrainerSession(private val owner: UUID, private val area: AreaRef, private
 
     fun botDied(nowMs: Long): List<Effect> = endRound(nowMs, Messages.YOU_WON)
 
+    /** The bot was dropped after an internal failure: ends the round like [botDied] but without a title. */
+    fun botFailed(nowMs: Long): List<Effect> = endRound(nowMs, null)
+
     fun tick(nowMs: Long): List<Effect> = when (state) {
         State.COUNTDOWN -> {
             if (nowMs - phaseStartMs >= t.countdownS * 1000L) {
@@ -93,12 +96,12 @@ class TrainerSession(private val owner: UUID, private val area: AreaRef, private
     }
 
     /** Ends the current round; the title is shown only if the fight had begun. */
-    private fun endRound(nowMs: Long, title: String): List<Effect> {
+    private fun endRound(nowMs: Long, title: String?): List<Effect> {
         val wasFighting = state == State.FIGHTING
         if (state != State.FIGHTING && state != State.COUNTDOWN) return emptyList()
         val out = mutableListOf<Effect>()
         bot?.let { out += Effect.RemoveBot(it) }
-        if (wasFighting) out += Effect.Title(owner, title)
+        if (wasFighting && title != null) out += Effect.Title(owner, title)
         bot = null
         state = State.REMATCH_WAIT
         phaseStartMs = nowMs

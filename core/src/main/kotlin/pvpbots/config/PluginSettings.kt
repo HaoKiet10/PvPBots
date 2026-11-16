@@ -8,6 +8,8 @@ data class PluginSettings(
     val botViewDistance: Int,
     val stuckRetrySeconds: Int,
     val stuckTeleportSeconds: Int,
+    /** At most this many bots are spawned per server tick (a spawn costs several ms); the rest wait their turn. */
+    val spawnsPerTick: Int,
 ) {
     companion object {
         fun load(root: Map<String, Any?>): Loaded<PluginSettings> {
@@ -29,6 +31,7 @@ data class PluginSettings(
                 botViewDistance = bot.int("view-distance", 2),
                 stuckRetrySeconds = bot.int("stuck-retry-seconds", 5),
                 stuckTeleportSeconds = bot.int("stuck-teleport-seconds", 10),
+                spawnsPerTick = bot.int("spawns-per-tick", 2, min = 1),
             )
             return Loaded(settings, w)
         }

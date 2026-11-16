@@ -15,6 +15,13 @@ class FakeBotPort : BotPort {
     private val titleLog = mutableMapOf<UUID, MutableList<String>>()
     val titles: Map<UUID, List<String>> get() = titleLog
     var failNextSpawn = false
+    /** Thrown (once) by the next spawn call. */
+    var throwOnNextSpawn: Throwable? = null
+    /** Fail (return null) every spawn while true. */
+    var failAllSpawns = false
+    /** Players [isDead] reports as dead. */
+    val deadPlayers = mutableSetOf<UUID>()
+    var spawnCalls = 0
     var onSpawn: ((Spawn) -> Unit)? = null
     private var counter = 0
 
@@ -26,6 +33,9 @@ class FakeBotPort : BotPort {
     override fun isBot(id: UUID) = id in bots
 
     override fun spawn(key: SessionKey, role: Role, difficulty: Difficulty, area: AreaRef, nearPlayer: UUID): UUID? {
+        spawnCalls++
+        throwOnNextSpawn?.let { throwOnNextSpawn = null; throw it }
+        if (failAllSpawns) return null
         if (failNextSpawn) {
             failNextSpawn = false
             return null
@@ -40,6 +50,8 @@ class FakeBotPort : BotPort {
     override fun remove(botId: UUID) {
         removed += botId
     }
+
+    override fun isDead(player: UUID) = player in deadPlayers
 
     override fun title(player: UUID, text: String) {
         titleLog.getOrPut(player) { mutableListOf() } += text

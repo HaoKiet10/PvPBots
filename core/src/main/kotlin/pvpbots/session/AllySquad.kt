@@ -68,6 +68,12 @@ class AllySquad(private val area: AreaRef, private val t: Timings) {
         return emptyList()
     }
 
+    /** The ally was dropped for good (repeated failures): forgotten without scheduling a respawn. Returns empty. */
+    fun allyLost(botId: UUID): List<Effect> {
+        bots.remove(botId)
+        return emptyList()
+    }
+
     fun tick(nowMs: Long): List<Effect> {
         when (state) {
             State.ENDED -> return emptyList()

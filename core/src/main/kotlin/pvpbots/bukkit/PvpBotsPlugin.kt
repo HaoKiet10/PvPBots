@@ -116,7 +116,9 @@ class PvpBotsPlugin : JavaPlugin() {
         if (this::botManager.isInitialized) botManager.removeAll()
         val settings = botManager.config.settings
         slots = BotSlots(maxBotsOverride ?: settings.maxBots)
-        director = AreaDirector(slots, botManager, settings.timings)
+        director = AreaDirector(slots, botManager, settings.timings, settings.spawnsPerTick) { msg, e ->
+            if (e == null) logger.warning(msg) else logger.log(Level.WARNING, msg, e)
+        }
         botManager.director = director
         if (this::regionWatcher.isInitialized) regionWatcher.reset()
     }

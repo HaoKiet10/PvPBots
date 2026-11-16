@@ -29,13 +29,19 @@ class AreaDirectorTest {
     private lateinit var slots: BotSlots
     private lateinit var d: AreaDirector
 
-    private fun director(capacity: Int): AreaDirector {
+    private val logged = mutableListOf<Pair<String, Throwable?>>()
+
+    private fun director(capacity: Int, spawnsPerTick: Int = 100): AreaDirector {
         slots = BotSlots(capacity)
-        d = AreaDirector(slots, port, T)
+        d = AreaDirector(slots, port, T, spawnsPerTick) { msg, e -> logged += msg to e }
         return d
     }
 
-    private fun enter(p: UUID, a: AreaRef, now: Long = 0) = d.onAreaChange(p, null, a, now)
+    /** Enters, then runs the director tick at the same time (spawns happen in tick, within the budget). */
+    private fun enter(p: UUID, a: AreaRef, now: Long = 0) {
+        d.onAreaChange(p, null, a, now)
+        d.tick(now)
+    }
 
     @Test fun enterArena_spawnsPersonalBot() {
         director(10)
@@ -69,6 +75,7 @@ class AreaDirectorTest {
         enter(P1, ARENA); enter(P2, ARENA)
         d.tick(3000)
         d.onAreaChange(P1, ARENA, null, 3500)
+        d.tick(3500)
         assertEquals(2, port.spawned.size)
         assertEquals(P2, port.lastSpawnNear)
         assertEquals(1, slots.used())
@@ -79,6 +86,7 @@ class AreaDirectorTest {
         director(10)
         enter(P1, ARENA)
         d.onAreaChange(P1, ARENA, BOSS, 0)
+        d.tick(0)
         assertNull(d.trainerFor(P1))
         assertNotNull(d.squadAt(W, "boss"))
         assertEquals(1, port.removed.size)          // trainer bot gone
@@ -188,6 +196,7 @@ class AreaDirectorTest {
         enter(P2, ARENA)
         assertEquals(listOf(BUSY), port.actionBars[P2])
         d.onBotDeath(port.spawned[0].botId, 1000)   // slot freed -> queued P2 trainer
+        d.tick(1000)
         assertEquals(P2, port.lastSpawnNear)
     }
 

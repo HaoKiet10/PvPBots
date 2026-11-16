@@ -118,6 +118,7 @@ class ProfileLoaderTest {
         assertEquals(2, s.botViewDistance)
         assertEquals(5, s.stuckRetrySeconds)
         assertEquals(10, s.stuckTeleportSeconds)
+        assertEquals(2, s.spawnsPerTick)
         assertTrue(l.warnings.isEmpty())
     }
 
@@ -127,7 +128,7 @@ class ProfileLoaderTest {
                 "max-bots" to 7,
                 "trainer" to mapOf("countdown-seconds" to 1, "time-limit-seconds" to 60, "rematch-delay-seconds" to 2),
                 "ally" to mapOf("respawn-seconds" to 4, "leave-grace-seconds" to 6),
-                "bot" to mapOf("view-distance" to 3, "stuck-retry-seconds" to 8, "stuck-teleport-seconds" to 20),
+                "bot" to mapOf("view-distance" to 3, "stuck-retry-seconds" to 8, "stuck-teleport-seconds" to 20, "spawns-per-tick" to 5),
             ),
         )
         assertEquals(7, l.value.maxBots)
@@ -135,6 +136,7 @@ class ProfileLoaderTest {
         assertEquals(3, l.value.botViewDistance)
         assertEquals(8, l.value.stuckRetrySeconds)
         assertEquals(20, l.value.stuckTeleportSeconds)
+        assertEquals(5, l.value.spawnsPerTick)
         assertTrue(l.warnings.isEmpty())
     }
 
@@ -150,5 +152,11 @@ class ProfileLoaderTest {
         assertTrue(l.warnings.any { it.contains("trainer.time-limit-seconds") })
         assertTrue(l.warnings.any { it.startsWith("bot") })
         assertFalse(l.warnings.any { it.contains("difficulties") })
+    }
+
+    @Test fun spawnsPerTickBelowOneWarns() {
+        val l = PluginSettings.load(mapOf("bot" to mapOf("spawns-per-tick" to 0)))
+        assertEquals(2, l.value.spawnsPerTick)
+        assertEquals(listOf("bot.spawns-per-tick: must be >= 1, using default 2"), l.warnings)
     }
 }

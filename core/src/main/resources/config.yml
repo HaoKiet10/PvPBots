@@ -15,8 +15,16 @@ bot:
   view-distance: 2            # minimum chunks kept loaded around a bot
   stuck-retry-seconds: 5
   stuck-teleport-seconds: 10
+  spawns-per-tick: 2          # max bots spawned per server tick (each spawn costs ~5 ms); the rest wait (min 1)
 
-# Signed skin textures, filled in by a later task: list of { value: "...", signature: "..." }
+# Bot skins. Each entry is a signed Mojang texture property: the base64 "value" and its "signature", copied from
+# a player profile fetched with signatures, e.g.
+#   https://sessionserver.mojang.com/session/minecraft/profile/<uuid-without-dashes>?unsigned=false
+# (properties[0].value / .signature), or from a skin site that shows the signed value + signature.
+# A bot gets a random entry. Empty list = default skins.
+#   skins:
+#     - value: "ewogICJ0aW1lc3RhbXAiIDog..."
+#       signature: "Kx3Lq9..."
 skins: []
 
 difficulties:

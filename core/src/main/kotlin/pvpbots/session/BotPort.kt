@@ -14,4 +14,7 @@ interface BotPort {
     fun remove(botId: UUID)
     fun title(player: UUID, text: String)
     fun actionBar(player: UUID, text: String)
+
+    /** True while [player] is dead (on the respawn screen); a trainer is not spawned for a dead owner. */
+    fun isDead(player: UUID): Boolean = false
 }
