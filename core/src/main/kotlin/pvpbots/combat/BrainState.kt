@@ -16,6 +16,7 @@ class BrainState(profile: DifficultyProfile, rng: Random) {
     var critJumped: Boolean = false
     var critWaitTicks: Int = 0
     var bowDrawTicks: Int = 0
+    var bowWalkTicks: Int = 0
 
     companion object {
         fun sampleThreshold(p: DifficultyProfile, rng: Random): Double =

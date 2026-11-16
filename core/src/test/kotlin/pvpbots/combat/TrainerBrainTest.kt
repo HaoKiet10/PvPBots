@@ -184,4 +184,84 @@ class TrainerBrainTest {
         val i = TrainerBrain.decide(percept(), MEDIUM, state(MEDIUM), rng)
         assertEquals(Vec3(0.0, 0.9, 2.5), i.lookAt)
     }
+
+    @Test
+    fun shieldUp_readyToAttack_lowersFirst() {
+        val i = TrainerBrain.decide(percept(hasShield = true, usingItem = true, lookHits = true, cooldown = 1f), HARD, state(HARD), rng)
+        assertEquals(Action.LOWER_SHIELD, i.action)
+    }
+
+    @Test
+    fun shieldUp_axeAttack_lowersFirst() {
+        val i = TrainerBrain.decide(
+            percept(targetBlocking = true, hasAxe = true, hasShield = true, usingItem = true, lookHits = true, held = KitSlots.AXE, cooldown = 1f),
+            PRO, state(PRO), rng,
+        )
+        assertEquals(Action.LOWER_SHIELD, i.action)
+    }
+
+    @Test
+    fun raiseShield_notReissuedWhileUsing() {
+        val i = TrainerBrain.decide(percept(hasShield = true, usingItem = true, cooldown = 0.2f), HARD, state(HARD), rng)
+        assertEquals(Action.NONE, i.action)
+    }
+
+    @Test
+    fun eatsWithNoTarget() {
+        val i = TrainerBrain.decide(percept(targetAt = null, health = 0.3, hasFood = true), MEDIUM, state(MEDIUM), rng)
+        assertEquals(Action.EAT, i.action)
+        assertEquals(KitSlots.FOOD, i.selectSlot)
+    }
+
+    @Test
+    fun totemWithNoTarget() {
+        val i = TrainerBrain.decide(percept(targetAt = null, health = 0.2, hasTotemInHotbar = true), PRO, state(PRO), rng)
+        assertEquals(KitSlots.TOTEM, i.selectSlot)
+    }
+
+    @Test
+    fun totemBeatsEat() {
+        val i = TrainerBrain.decide(percept(health = 0.2, hasFood = true, hasTotemInHotbar = true), PRO, state(PRO), rng)
+        assertEquals(KitSlots.TOTEM, i.selectSlot)
+        assertNotEquals(Action.EAT, i.action)
+    }
+
+    @Test
+    fun eatBeatsAttack() {
+        val i = TrainerBrain.decide(percept(health = 0.3, hasFood = true, lookHits = true, cooldown = 1f), MEDIUM, state(MEDIUM), rng)
+        assertEquals(Action.EAT, i.action)
+    }
+
+    @Test
+    fun eatBeatsAxeBreak() {
+        val i = TrainerBrain.decide(percept(health = 0.3, hasFood = true, targetBlocking = true, hasAxe = true, lookHits = true), PRO, state(PRO), rng)
+        assertEquals(Action.EAT, i.action)
+        assertEquals(KitSlots.FOOD, i.selectSlot)
+    }
+
+    @Test
+    fun thresholdResampledWithinRangeAfterEachAttack() {
+        val s = state(EASY)
+        val r = Random(5)
+        val seen = mutableSetOf<Double>()
+        repeat(8) {
+            val i = TrainerBrain.decide(percept(lookHits = true, cooldown = 1f), EASY, s, r)
+            assertEquals(Action.ATTACK, i.action)
+            assertTrue(s.cooldownThreshold in 0.6..1.0)
+            seen += s.cooldownThreshold
+        }
+        assertTrue(seen.size > 1)
+    }
+
+    @Test
+    fun critStateResetsAfterAttack() {
+        val s = state(PRO)
+        TrainerBrain.decide(percept(lookHits = true, cooldown = 1f), PRO, s, rng)
+        val hit = TrainerBrain.decide(percept(lookHits = true, cooldown = 1f, onGround = false, velY = -0.1), PRO, s, rng)
+        assertEquals(Action.ATTACK, hit.action)
+        assertNull(s.critRoll)
+        assertEquals(false, s.critJumped)
+        val next = TrainerBrain.decide(percept(lookHits = true, cooldown = 1f), PRO, s, rng)
+        assertTrue(next.jump)
+    }
 }

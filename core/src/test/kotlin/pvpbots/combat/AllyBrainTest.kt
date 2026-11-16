@@ -48,14 +48,25 @@ class AllyBrainTest {
     }
 
     @Test
-    fun allyBow_unreachableShot_walksInstead() {
+    fun allyBow_unreachableShot_walksWithoutDrawing_for10Calls() {
         val s = state(MEDIUM)
         val p = percept(targetAt = Vec3(0.0, 40.0, 3.0), hasBow = true, held = KitSlots.BOW)
-        repeat(20) { AllyBrain.decide(p, MEDIUM, s, rng) }
+        repeat(10) {
+            val r = AllyBrain.decide(p, MEDIUM, s, rng)
+            assertEquals(MoveStyle.WALK, r.style)
+            assertEquals(Action.NONE, r.action)
+            assertNull(r.bowPitch)
+        }
+    }
+
+    @Test
+    fun allyBow_steepButReachable_drawsThenReleases() {
+        val s = state(MEDIUM)
+        val p = percept(targetAt = Vec3(0.0, 7.3, 5.0), hasBow = true, held = KitSlots.BOW, targetReachable = false)
+        repeat(20) { assertEquals(Action.DRAW_BOW, AllyBrain.decide(p, MEDIUM, s, rng).action) }
         val r = AllyBrain.decide(p, MEDIUM, s, rng)
-        assertEquals(MoveStyle.WALK, r.style)
-        assertEquals(Action.NONE, r.action)
-        assertNull(r.bowPitch)
+        assertEquals(Action.RELEASE_BOW, r.action)
+        assertNotNull(r.bowPitch)
     }
 
     @Test

@@ -13,6 +13,7 @@ internal object CombatLogic {
     private const val FOLLOW_RANGE = 4.0
     private const val HIGH_TARGET = 4.0
     private const val BOW_DRAW_TICKS = 20
+    private const val BOW_WALK_TICKS = 10
     private const val ARROW_SPEED = 3.0
     private const val WTAP_TICKS = 2
     private const val CRIT_WAIT_LIMIT = 10
@@ -135,17 +136,28 @@ internal object CombatLogic {
     }
 
     private fun bow(p: Perception, s: BrainState, t: TargetView, look: Vec3): Intent {
-        if (p.heldSlot != KitSlots.BOW) {
-            s.bowDrawTicks = 0
-            return intent(MoveStyle.STAND, null, look, select = KitSlots.BOW)
+        val drawing = s.bowDrawTicks > 0
+        if (!drawing) {
+            if (s.bowWalkTicks > 0) {
+                s.bowWalkTicks--
+                return intent(MoveStyle.WALK, t.pos, look)
+            }
+            if (Ballistics.pitchFor(p.eye, look, ARROW_SPEED) == null) return giveUpShot(s, t, look)
+            if (p.heldSlot != KitSlots.BOW) return intent(MoveStyle.STAND, null, look, select = KitSlots.BOW)
         }
         if (s.bowDrawTicks < BOW_DRAW_TICKS) {
             s.bowDrawTicks++
             return intent(MoveStyle.STAND, null, look, Action.DRAW_BOW)
         }
         s.bowDrawTicks = 0
-        val pitch = Ballistics.pitchFor(p.eye, look, ARROW_SPEED)
-            ?: return intent(MoveStyle.WALK, t.pos, look)
+        val pitch = Ballistics.pitchFor(p.eye, look, ARROW_SPEED) ?: return giveUpShot(s, t, look)
         return intent(MoveStyle.STAND, null, look, Action.RELEASE_BOW, bowPitch = pitch)
+    }
+
+    /** No firing solution: close in on foot for BOW_WALK_TICKS decide() calls (this one included) before re-checking. */
+    private fun giveUpShot(s: BrainState, t: TargetView, look: Vec3): Intent {
+        s.bowDrawTicks = 0
+        s.bowWalkTicks = BOW_WALK_TICKS - 1
+        return intent(MoveStyle.WALK, t.pos, look)
     }
 }
