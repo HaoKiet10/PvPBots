@@ -1,10 +1,12 @@
 package pvpbots.bukkit
 
 import org.bukkit.Material
+import org.bukkit.NamespacedKey
 import org.bukkit.attribute.Attribute
 import org.bukkit.entity.Player
 import org.bukkit.inventory.ItemStack
 import org.bukkit.inventory.PlayerInventory
+import org.bukkit.persistence.PersistentDataType
 import pvpbots.combat.KitSlots
 import pvpbots.profile.DifficultyProfile
 
@@ -25,11 +27,14 @@ class KitApplier(val kits: Map<String, Kit>) {
         val arrows: Int,
     )
 
-    /** Clears the bot and gives it the kit, full health/food and no effects. Unknown kit: empty inventory. */
-    fun apply(p: Player, kitName: String, profile: DifficultyProfile) {
+    /**
+     * Clears the bot and gives it the kit, full health/food and no effects. Unknown kit: empty inventory. In a kit arena
+     * ([kitArena]) both sides fight in the same kit, so the profile's bonus totem is left out.
+     */
+    fun apply(p: Player, kitName: String, profile: DifficultyProfile, kitArena: Boolean = false) {
         val inv = p.inventory
         fill(inv, kitName)
-        if (profile.totem) inv.setItem(KitSlots.TOTEM, ItemStack(Material.TOTEM_OF_UNDYING))
+        if (profile.totem && !kitArena) inv.setItem(KitSlots.TOTEM, ItemStack(Material.TOTEM_OF_UNDYING))
         inv.heldItemSlot = KitSlots.SWORD
         p.activePotionEffects.forEach { p.removePotionEffect(it.type) }
         p.health = p.getAttribute(Attribute.MAX_HEALTH)?.value ?: 20.0
@@ -41,11 +46,12 @@ class KitApplier(val kits: Map<String, Kit>) {
 
     /**
      * A real player in a kit arena (§5.6): the same kit items as a bot gets (no totem), full health, food 20 and
-     * saturation 5. Potion effects and XP are not touched. The caller must have stashed the inventory first.
+     * saturation 5. Potion effects and XP are not touched. The caller must have stashed the inventory first (and taken
+     * out anything that is not a kit item, see [isKitItem]). Every item given carries the [KIT_TAG] tag.
      */
     fun applyToPlayer(p: Player, kitName: String) {
         val inv = p.inventory
-        fill(inv, kitName)
+        fill(inv, kitName, tagged = true)
         inv.heldItemSlot = KitSlots.SWORD
         p.health = p.getAttribute(Attribute.MAX_HEALTH)?.value ?: 20.0
         p.foodLevel = 20
@@ -66,24 +72,39 @@ class KitApplier(val kits: Map<String, Kit>) {
         return out
     }
 
-    /** Clears [inv] (main, armor, off-hand) and puts the kit in: armor, hotbar per [KitSlots], shield off-hand. Unknown kit: empty. */
-    fun fill(inv: PlayerInventory, kitName: String) {
+    /**
+     * Clears [inv] (main, armor, off-hand) and puts the kit in: armor, hotbar per [KitSlots], shield off-hand. Unknown
+     * kit: empty. [tagged]: every item carries [KIT_TAG] (players; bots' items are never tagged).
+     */
+    fun fill(inv: PlayerInventory, kitName: String, tagged: Boolean = false) {
         inv.clear()
         inv.armorContents = arrayOfNulls(4)
         inv.setItemInOffHand(null)
         val kit = kits[kitName] ?: return
+        fun item(m: Material, amount: Int = 1): ItemStack = ItemStack(m, amount).also { if (tagged) tag(it) }
         // Bukkit armorContents order is boots, leggings, chestplate, helmet.
-        inv.armorContents = kit.armor.reversed().map { m -> m?.let { ItemStack(it) } }.toTypedArray()
-        kit.sword?.let { inv.setItem(KitSlots.SWORD, ItemStack(it)) }
-        kit.axe?.let { inv.setItem(KitSlots.AXE, ItemStack(it)) }
-        kit.food?.let { inv.setItem(KitSlots.FOOD, ItemStack(it, kit.foodAmount.coerceIn(1, it.maxStackSize))) }
-        kit.bow?.let { inv.setItem(KitSlots.BOW, ItemStack(it)) }
-        if (kit.arrows > 0) inv.setItem(KitSlots.ARROWS, ItemStack(Material.ARROW, kit.arrows.coerceAtMost(64)))
-        if (kit.shield) inv.setItemInOffHand(ItemStack(Material.SHIELD))
+        inv.armorContents = kit.armor.reversed().map { m -> m?.let { item(it) } }.toTypedArray()
+        kit.sword?.let { inv.setItem(KitSlots.SWORD, item(it)) }
+        kit.axe?.let { inv.setItem(KitSlots.AXE, item(it)) }
+        kit.food?.let { inv.setItem(KitSlots.FOOD, item(it, kit.foodAmount.coerceIn(1, it.maxStackSize))) }
+        kit.bow?.let { inv.setItem(KitSlots.BOW, item(it)) }
+        if (kit.arrows > 0) inv.setItem(KitSlots.ARROWS, item(Material.ARROW, kit.arrows.coerceAtMost(64)))
+        if (kit.shield) inv.setItemInOffHand(item(Material.SHIELD))
     }
 
     companion object {
         private const val ARMOR_PIECES = 4
+
+        /** `pvpbots:kit` (byte 1) on the meta of every kit item given to a player: refill and restore take these back. */
+        val KIT_TAG = NamespacedKey("pvpbots", "kit")
+
+        fun tag(item: ItemStack) {
+            item.editMeta { it.persistentDataContainer.set(KIT_TAG, PersistentDataType.BYTE, 1) }
+        }
+
+        /** A kit item the plugin gave a player (anything else in a kitted inventory belongs to the player). */
+        fun isKitItem(item: ItemStack?): Boolean =
+            item != null && !item.type.isAir && item.hasItemMeta() && item.itemMeta.persistentDataContainer.has(KIT_TAG, PersistentDataType.BYTE)
 
         /** [raw] is the parsed `kits:` section (name -> kit map). Warnings are prefixed `kits.<name>.<key>`. */
         fun load(raw: Map<String, Any?>, warnings: MutableList<String>): KitApplier {

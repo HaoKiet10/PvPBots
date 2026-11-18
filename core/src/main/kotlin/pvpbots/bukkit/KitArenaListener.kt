@@ -7,6 +7,7 @@ import org.bukkit.event.entity.EntityPickupItemEvent
 import org.bukkit.event.entity.PlayerDeathEvent
 import org.bukkit.event.player.PlayerDropItemEvent
 import org.bukkit.event.player.PlayerJoinEvent
+import org.bukkit.event.player.PlayerPickupArrowEvent
 import org.bukkit.event.player.PlayerQuitEvent
 import org.bukkit.event.player.PlayerRespawnEvent
 
@@ -36,6 +37,10 @@ class KitArenaListener(private val plugin: PvpBotsPlugin) : Listener {
     /** No picking up while wearing an arena kit: the next refill or restore would replace those items. */
     @EventHandler(priority = EventPriority.HIGHEST)
     fun onPickup(event: EntityPickupItemEvent) = kits.onPickup(event)
+
+    /** Arrows are picked up through their own event. */
+    @EventHandler(priority = EventPriority.HIGHEST)
+    fun onPickupArrow(event: PlayerPickupArrowEvent) = kits.onPickupArrow(event)
 
     /** A death while wearing an arena kit drops nothing; the player keeps their XP (the stash comes back on respawn). */
     @EventHandler(priority = EventPriority.HIGHEST)

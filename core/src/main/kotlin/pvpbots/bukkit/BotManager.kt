@@ -154,7 +154,7 @@ class BotManager(
             val id = UUID.randomUUID()
             val handle = BotProfiler.spawnPart(BotProfiler.SpawnPart.ADAPTER) { adapter.spawn(BotSpec(nameFor(role, id), id, skin?.value, skin?.signature), at) }
             try {
-                BotProfiler.spawnPart(BotProfiler.SpawnPart.KIT) { config.kits.apply(handle.bukkit, profile.kit, profile) }
+                BotProfiler.spawnPart(BotProfiler.SpawnPart.KIT) { config.kits.apply(handle.bukkit, profile.kit, profile, kitArena = area.kit != null) }
                 BotProfiler.spawnPart(BotProfiler.SpawnPart.DISTANCES) { applyDistances(handle.bukkit) }
                 val controller = BotController(this, handle, key, role, profile, area, facing)
                 val record = BotRecord(handle, key, role, profile, area, controller)

@@ -15,6 +15,7 @@ import org.bukkit.event.Listener
 import org.bukkit.event.entity.EntityPickupItemEvent
 import org.bukkit.event.entity.PlayerDeathEvent
 import org.bukkit.event.player.PlayerDropItemEvent
+import org.bukkit.event.player.PlayerPickupArrowEvent
 import org.bukkit.inventory.ItemStack
 import org.bukkit.inventory.PlayerInventory
 import org.bukkit.inventory.meta.BlockStateMeta
@@ -33,7 +34,7 @@ import pvpbots.session.Role
 import pvpbots.session.SessionKey
 
 /**
- * Kit-arena self-test checks (K1, K2, K3), run by [SelfTest] in [SelfTest.Mode.All]. The test player is a dummy (a real
+ * Kit-arena self-test checks (K1, K2, K3, K4), run by [SelfTest] in [SelfTest.Mode.All]. The test player is a dummy (a real
  * server-side `Player`, but not in the server's player list), so the region callback is called directly the way the
  * plugin's RegionWatcher hook calls it, and join is driven through [KitArenaService.onJoin] (the listener's body).
  */
@@ -45,15 +46,69 @@ internal class KitSelfTest(private val t: SelfTest, private val plugin: PvpBotsP
     /** Slots that matched only up to NBT key order (see [diff]). */
     private var reordered = 0
 
+    /** Saves seen through [KitArenaService.savePlayer]: player, and whether their stash file still existed then. */
+    private val saves = ArrayList<Pair<java.util.UUID, Boolean>>()
+    private var failSaves = false
+
     suspend fun SequenceScope<Int>.run() {
         Bukkit.getPluginManager().registerEvents(this@KitSelfTest, plugin)
+        val realSave = kits.savePlayer
+        // Dummies must leave no player data behind (D1): saves are recorded instead (K2 runs one real save and cleans up).
+        kits.savePlayer = { p ->
+            saves += p.uniqueId to kits.stashFile(p.uniqueId).exists()
+            if (failSaves) throw java.io.IOException("self-test: save refused")
+        }
         try {
             kitArena()
-            stashOnJoin()
+            stashOnJoin(realSave)
             failedRestore()
+            kitChangeMidSession()
+            saveFails()
         } finally {
+            kits.savePlayer = realSave
             HandlerList.unregisterAll(this@KitSelfTest)
         }
+    }
+
+    /**
+     * K5 (C1): the restored inventory is saved while the stash still exists, and a save that fails keeps the stash (no
+     * new stash over it, not restored twice); the retry on quit saves and deletes it.
+     */
+    private suspend fun SequenceScope<Int>.saveFails() {
+        val h = t.spawnDummy("Save", 1400, 0)
+        val p = h.bukkit
+        val id = p.uniqueId
+        yield(2)
+        p.inventory.clear()
+        val gem = ItemStack(Material.DIAMOND, 3)
+        val size = p.inventory.contents.size
+        val stash = arrayOfNulls<ItemStack>(size).also { it[4] = gem }
+        val file = kits.stashFile(id)
+        ArenaRegistry.writeDurably(file, StashCodec.encode(stash.map { it?.serializeAsBytes() }))
+        saves.clear()
+        failSaves = true
+        kits.onJoin(p)
+        val restored = p.inventory.getItem(4)?.isSimilar(gem) == true
+        val savedWithStash = saves.singleOrNull() == (id to true)
+        val kept = file.exists()
+        val notAgain = !kits.hasStash(id)
+        kits.refill(id) // a kept file must not count as a stash: nothing is refilled or restored over it
+        val once = p.inventory.all(Material.DIAMOND).values.sumOf { it.amount } == 3
+        failSaves = false
+        saves.clear()
+        kits.onQuit(p)
+        val retried = saves.firstOrNull() == (id to true)
+        val deleted = !file.exists()
+        t.check(
+            "K5 save before the stash goes",
+            restored && savedWithStash && kept && notAgain && once && retried && deleted,
+            "failing save: items back $restored, save attempted while the stash existed $savedWithStash, stash kept $kept, " +
+                "not counted as a stash any more $notAgain, diamonds exactly once $once; " +
+                "quit: save retried with the stash present $retried, stash deleted $deleted",
+        )
+        kits.forget(id)
+        if (file.exists()) file.delete()
+        runCatching { t.removeDummy(h) }
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -103,7 +158,10 @@ internal class KitSelfTest(private val t: SelfTest, private val plugin: PvpBotsP
         val key = SessionKey.Trainer(id)
         val spawned = waitUntil(60) { t.trainerBot(key) != null }
         val bot = t.trainerBot(key)
-        val botKit = if (bot == null) "no trainer" else kitMismatch(bot.player.inventory, "iron", allowTotem = true)
+        // Both sides fight in the same kit: no bonus totem for the bot in a kit arena; only the player's items are tagged.
+        val botKit = if (bot == null) "no trainer" else kitMismatch(bot.player.inventory, "iron", allowTotem = false)
+        val botUntagged = bot != null && bot.player.inventory.contents.none { KitApplier.isKitItem(it) }
+        val playerTagged = p.inventory.contents.filter { it != null && !it.type.isAir }.let { it.isNotEmpty() && it.all { s -> KitApplier.isKitItem(s) } }
         val refilled = p.inventory.getItem(KitSlots.FOOD)?.amount == 4
         val kitAfterSpawn = kitMismatch(p.inventory, "iron", allowTotem = false)
         val notRestashed = stashBytes != null && stashFile.readBytes().contentEquals(stashBytes)
@@ -118,6 +176,13 @@ internal class KitSelfTest(private val t: SelfTest, private val plugin: PvpBotsP
         Bukkit.getPluginManager().callEvent(pickupEvent)
         dropped.remove()
         val pickupCancelled = pickupEvent.isCancelled
+        val arrowEntity = world.spawnArrow(p.location.clone().add(0.0, 1.0, 0.0), org.bukkit.util.Vector(0, 0, 0), 0f, 0f)
+        val arrowItem = world.dropItem(p.location, ItemStack(Material.ARROW))
+        val arrowEvent = PlayerPickupArrowEvent(p, arrowItem, arrowEntity)
+        Bukkit.getPluginManager().callEvent(arrowEvent)
+        arrowItem.remove()
+        arrowEntity.remove()
+        val arrowCancelled = arrowEvent.isCancelled
 
         // Leave.
         kits.onAreaChange(p, area, null)
@@ -163,12 +228,14 @@ internal class KitSelfTest(private val t: SelfTest, private val plugin: PvpBotsP
         t.check(
             "K1 kit arena stash/restore",
             originalCount >= 9 && stashed && stashMatches && kitAtEnter == null && healed && spawned >= 0 && botKit == null &&
+                botUntagged && playerTagged && arrowCancelled &&
                 refilled && kitAfterSpawn == null && notRestashed && dropCancelled && leaveDiff == null && stashGoneAfterLeave &&
                 stashedAgain && releaseDiff == null && stashGoneAfterRelease && stashedForDeath && deathOk && stashAfterDeath &&
                 pickupCancelled && respawnDiff == null && stashGoneAfterRespawn,
             "test items in $originalCount slots; enter: stash file $stashed (decodes to the original slots: $stashMatches), " +
                 "kit ${kitAtEnter ?: "iron exactly"}, health ${"%.1f/%.1f".format(healthAtEnter, max)} food $foodAtEnter (was 12/8), full: $healed; " +
-                "trainer after $spawned ticks, its kit ${botKit ?: "iron"}; refilled on spawn (apples 1 -> 4): $refilled, " +
+                "trainer after $spawned ticks, its kit ${botKit ?: "iron, no totem"}, bot items untagged: $botUntagged, player kit items tagged: $playerTagged; " +
+                "arrow pick-up cancelled: $arrowCancelled; refilled on spawn (apples 1 -> 4): $refilled, " +
                 "kit after spawn ${kitAfterSpawn ?: "iron exactly"}, stash unchanged: $notRestashed; drop cancelled: $dropCancelled; pick-up cancelled: $pickupCancelled; " +
                 "leave: ${leaveDiff ?: "every slot identical"}, stash deleted: $stashGoneAfterLeave; " +
                 "kit change (${setKit.lastOrNull()}): stashed $stashedAgain, ${releaseDiff ?: "every slot identical"}, stash deleted: $stashGoneAfterRelease; " +
@@ -183,7 +250,7 @@ internal class KitSelfTest(private val t: SelfTest, private val plugin: PvpBotsP
     }
 
     /** K2: a stash file present when the player joins is restored exactly and deleted. */
-    private suspend fun SequenceScope<Int>.stashOnJoin() {
+    private suspend fun SequenceScope<Int>.stashOnJoin(realSave: (Player) -> Unit) {
         val h = t.spawnDummy("Join", 1100, 0)
         val p = h.bukkit
         yield(2)
@@ -202,13 +269,45 @@ internal class KitSelfTest(private val t: SelfTest, private val plugin: PvpBotsP
         ArenaRegistry.writeDurably(file, StashCodec.encode(stashSlots))
         val written = file.exists()
 
-        kits.onJoin(p)
+        val before = System.currentTimeMillis() - 2000
+        // One real save (Player.saveData) to prove it works on this server; its files are deleted below (D1).
+        var stashAtSave: Boolean? = null
+        kits.savePlayer = { pl -> stashAtSave = kits.stashFile(pl.uniqueId).exists(); realSave(pl) }
+        try {
+            kits.onJoin(p)
+        } finally {
+            kits.savePlayer = { pl -> saves += pl.uniqueId to kits.stashFile(pl.uniqueId).exists(); if (failSaves) throw java.io.IOException("self-test: save refused") }
+        }
         val d = diff(stashSlots, slots(p))
         val deleted = !file.exists()
+        val saved = playerDataFile(p.uniqueId)
+        val savedOk = saved != null && saved.lastModified() >= before && stashAtSave == true
         t.check(
             "K2 stash on join",
-            written && d == null && deleted,
-            "stash file written: $written ($size slots); after join: ${d ?: "inventory equals the stash, every slot identical"}; stash deleted: $deleted",
+            written && d == null && deleted && savedOk,
+            "stash file written: $written ($size slots); after join: ${d ?: "inventory equals the stash, every slot identical"}; stash deleted: $deleted; " +
+                "player data saved while the stash still existed ($stashAtSave): ${saved?.let { "${it.parentFile.name}/${it.name}, written ${System.currentTimeMillis() - it.lastModified()} ms ago" } ?: "no file"}",
+        )
+        Bukkit.getWorlds().firstOrNull()?.worldFolder?.walkTopDown()?.maxDepth(4)
+            ?.filter { it.isFile && it.name.contains(p.uniqueId.toString()) }?.toList()?.forEach { it.delete() }
+
+        // Saved while kitted (a tagged kit item in it): untagged items that came in from outside are handed back.
+        p.inventory.clear()
+        val kitSword = ItemStack(Material.IRON_SWORD).also { KitApplier.tag(it) }
+        val mailed = ItemStack(Material.EMERALD, 4)
+        mailed.editMeta { it.displayName(Component.text("Mailed before the crash")) }
+        p.inventory.setItem(0, kitSword)
+        p.inventory.setItem(8, mailed.clone())
+        ArenaRegistry.writeDurably(file, StashCodec.encode(stashSlots))
+        kits.onJoin(p)
+        val after = slots(p)
+        val d2 = diff(stashSlots.mapIndexed { i, b -> b ?: after.getOrNull(i) }, after)
+        val mailedBack = p.inventory.containsAtLeast(mailed, 4)
+        val noKit = p.inventory.contents.none { KitApplier.isKitItem(it) }
+        t.check(
+            "K2b stash on join, saved while kitted",
+            d2 == null && mailedBack && noKit && !file.exists(),
+            "stash ${d2 ?: "every slot identical"}; untagged item handed back: $mailedBack; no kit item left: $noKit; stash deleted: ${!file.exists()}",
         )
         if (file.exists()) file.delete()
         runCatching { t.removeDummy(h) }
@@ -319,6 +418,96 @@ internal class KitSelfTest(private val t: SelfTest, private val plugin: PvpBotsP
         kits.forget(id)
         if (file.exists()) file.delete()
         h2?.let { runCatching { t.removeDummy(it) } }
+        cleanupArena(name)
+    }
+
+    /** The player-data file [Player.saveData] writes for [id] (searched under the main world's folder). */
+    private fun playerDataFile(id: java.util.UUID): java.io.File? {
+        val root = Bukkit.getWorlds().firstOrNull()?.worldFolder ?: return null
+        return root.walkTopDown().maxDepth(4).firstOrNull { it.isFile && it.name == "$id.dat" }
+    }
+
+    /**
+     * K4: `/pvpbots arena kit` mid-session (I2) with own items put into the kitted inventory from outside (I1): the
+     * session goes on, the next round's trainer wears the new kit (no totem) and the player is refilled with it; items
+     * that came in from outside survive the refill and are handed back on leave, on top of the stash.
+     */
+    private suspend fun SequenceScope<Int>.kitChangeMidSession() {
+        val name = "selftest_k4"
+        val origin = BlockPos(1300, world.getHighestBlockYAt(1300, 0), 0)
+        service.createAt(world, origin, Facing.NORTH, name, Preset.DUEL, "iron", null)
+        val ready = waitUntil(200) { registry().get(name)?.status == ArenaRecord.Status.READY }
+        val rec = registry().get(name)
+        if (ready < 0 || rec == null) {
+            t.check("K4 kit change mid-session", false, "arena never became READY (record ${rec?.status})")
+            cleanupArena(name)
+            return
+        }
+        val layout = ArenaLayout.generate(rec.preset, rec.origin, rec.facing)
+        val area = AreaRef(world.name, rec.regionId, Role.TRAINER, Difficulty.EASY, 1, layout.region, arena = rec.name, kit = rec.kit)
+        val h = t.spawnDummy("Chg", origin.x + 2, origin.z + 2)
+        val p = h.bukkit
+        val id = p.uniqueId
+        yield(2)
+        giveTestItems(p)
+        val original = slots(p)
+        val file = kits.stashFile(id)
+        val key = SessionKey.Trainer(id)
+        kits.onAreaChange(p, null, area)
+        plugin.director.onAreaChange(id, null, area, t.nowMs())
+        val spawned = waitUntil(60) { t.trainerBot(key) != null }
+        val bot1 = t.trainerBot(key)
+        val session = plugin.director.trainerFor(id)
+
+        // The admin switches the kit; RegionWatcher reports the same region with the new kit.
+        val setKit = service.setKit(name, "diamond")
+        val area2 = area.copy(kit = "diamond")
+        kits.onAreaChange(p, area, area2)
+        plugin.director.onAreaChange(id, area, area2, t.nowMs())
+        val sameSession = session != null && plugin.director.trainerFor(id) === session
+        val kitNow = kitMismatch(p.inventory, "diamond", allowTotem = false)
+        val restashed = file.exists()
+
+        // Own items put in from outside (an ender chest, a mail GUI) while kitted, one held on the cursor.
+        val mail = ItemStack(Material.EMERALD, 7)
+        mail.editMeta { it.displayName(Component.text("Mailed in")) }
+        val held = ItemStack(Material.LAPIS_LAZULI, 9)
+        held.editMeta { it.displayName(Component.text("On the cursor")) }
+        p.inventory.addItem(mail.clone())
+        p.setItemOnCursor(held.clone())
+        p.inventory.getItem(KitSlots.FOOD)?.let { it.amount = 1 }
+
+        // Next round: the bot dies, the rematch spawns a new trainer (refill).
+        bot1?.player?.health = 0.0
+        val next = waitUntil(400) { t.trainerBot(key)?.let { it.id != bot1?.id } == true }
+        val bot2 = t.trainerBot(key)?.takeIf { it.id != bot1?.id }
+        val bot2Kit = if (bot2 == null) "no second trainer" else kitMismatch(bot2.player.inventory, "diamond", allowTotem = false)
+        val refilled = p.inventory.getItem(KitSlots.FOOD)?.amount == 6
+        val mailKept = p.inventory.containsAtLeast(mail, 7)
+        val heldKept = p.inventory.containsAtLeast(held, 9) || p.itemOnCursor.isSimilar(held)
+
+        // Leave: the stash comes back and both own items are handed back on top.
+        kits.onAreaChange(p, area2, null)
+        plugin.director.onAreaChange(id, area2, null, t.nowMs())
+        val after = slots(p)
+        val leaveDiff = diff(original.mapIndexed { i, b -> b ?: after.getOrNull(i) }, after)
+        val mailBack = p.inventory.containsAtLeast(mail, 7)
+        val heldBack = p.inventory.containsAtLeast(held, 9)
+        val noKitLeft = p.inventory.contents.none { KitApplier.isKitItem(it) }
+        val stashGone = !file.exists()
+        t.check(
+            "K4 kit change mid-session",
+            spawned >= 0 && bot1 != null && sameSession && kitNow == null && restashed && next >= 0 && bot2Kit == null &&
+                refilled && mailKept && heldKept && leaveDiff == null && mailBack && heldBack && noKitLeft && stashGone,
+            "first trainer after $spawned ticks; kit change (${setKit.lastOrNull()}): same session $sameSession, player kit ${kitNow ?: "diamond exactly"}, " +
+                "stashed again $restashed; next round's trainer after $next ticks, its kit ${bot2Kit ?: "diamond, no totem"}; " +
+                "player refilled with diamond (apples 1 -> 6): $refilled; own items put in while kitted kept through the refill: " +
+                "mailed $mailKept, cursor $heldKept; leave: ${leaveDiff ?: "every stashed slot identical"}, mailed back $mailBack, " +
+                "cursor item back $heldBack, no kit item left $noKitLeft, stash deleted $stashGone",
+        )
+        kits.forget(id)
+        if (file.exists()) file.delete()
+        runCatching { t.removeDummy(h) }
         cleanupArena(name)
     }
 
