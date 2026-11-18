@@ -248,6 +248,8 @@ internal class KitSelfTest(private val t: SelfTest, private val plugin: PvpBotsP
         // Leave: the restore fails; file and inventory (the kit) stay as they are.
         kits.onAreaChange(p, area, null)
         val fileKept = file.exists() && file.readBytes().contentEquals(junk)
+        val marker = kits.failedMarker(id)
+        val markerWritten = marker.isFile && marker.readText().trim() == "iron"
         val kitKept = kitMismatch(p.inventory, "iron", allowTotem = false)
 
         // Outside: picking up and dropping are vanilla.
@@ -290,6 +292,8 @@ internal class KitSelfTest(private val t: SelfTest, private val plugin: PvpBotsP
             val gathered = ItemStack(Material.DIAMOND, 2)
             gathered.editMeta { it.displayName(Component.text("Picked up 2")) }
             p2.inventory.addItem(gathered.clone())
+            // A restart forgets everything held in memory; only the marker file tells the failure.
+            kits.forgetFailuresInMemory(id)
             ArenaRegistry.writeDurably(file, good)
             kits.onRespawn(p2)
             yield(2)
@@ -299,15 +303,18 @@ internal class KitSelfTest(private val t: SelfTest, private val plugin: PvpBotsP
             gatheredKept = p2.inventory.containsAtLeast(gathered, 2)
             deleted = !file.exists()
         }
+        val markerGone = !marker.exists()
         t.check(
             "K3 failed restore keeps own items",
             good != null && fileKept && kitKept == null && !pickup.isCancelled && !drop.isCancelled && noRestash &&
-                keptAfterRefill && !dropInside.isCancelled && emeraldsDropped && ownDiff == null && gatheredKept && deleted,
-            "stash made: ${good != null}; broken stash on leave: file kept $fileKept, inventory ${kitKept ?: "still the kit"}; " +
+                keptAfterRefill && !dropInside.isCancelled && emeraldsDropped && ownDiff == null && gatheredKept && deleted &&
+                markerWritten && markerGone,
+            "stash made: ${good != null}; broken stash on leave: file kept $fileKept, inventory ${kitKept ?: "still the kit"}, " +
+                "failure marker written (kit iron): $markerWritten; " +
                 "outside: pick-up cancelled ${pickup.isCancelled}, drop cancelled ${drop.isCancelled}; re-enter: stash untouched $noRestash, " +
                 "emeralds kept after a refill: $keptAfterRefill, drop inside cancelled ${dropInside.isCancelled}; " +
                 "death: ${death?.let { "drops ${it.drops.size}, gathered emeralds among them: $emeraldsDropped" } ?: "not seen"}; " +
-                "stash fixed + respawn: ${ownDiff ?: "every stashed slot identical"}, gathered diamonds kept: $gatheredKept, stash deleted: $deleted",
+                "in-memory failure state dropped (restart), stash fixed + respawn: ${ownDiff ?: "every stashed slot identical"}, gathered diamonds kept: $gatheredKept, stash deleted: $deleted, marker deleted: $markerGone",
         )
         kits.forget(id)
         if (file.exists()) file.delete()

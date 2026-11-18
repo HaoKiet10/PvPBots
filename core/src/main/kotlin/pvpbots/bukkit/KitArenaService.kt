@@ -46,7 +46,8 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
     /**
      * A restore of this player's stash failed: they still have whatever they had (kit plus anything gathered since), which
      * is now theirs. No kit rules apply to them (vanilla drops, no refill), and the next successful restore hands those
-     * items back on top of the stash. Kept across quit/join for the rest of the server run.
+     * items back on top of the stash. Also written durably as [failedMarker] (holding the kit name), so the state
+     * survives a restart, crash or reload; either one counts (see [restoreFailedState]).
      */
     private val restoreFailed = HashSet<UUID>()
 
@@ -60,6 +61,11 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
 
     fun hasStash(id: UUID): Boolean = id !in spent && stashFile(id).exists()
 
+    /** `stash/<uuid>.failed`: a restore of this player's stash failed; its text is the kit they were wearing (may be empty). */
+    fun failedMarker(id: UUID) = File(dir, "$id.failed")
+
+    private fun restoreFailedState(id: UUID): Boolean = id in restoreFailed || failedMarker(id).exists()
+
     /**
      * Wearing this arena's kit inside that arena (stash safe on disk, no failed restore): drops and pick-ups are blocked,
      * a death drops nothing, and a new round refills the kit. Anyone else follows vanilla rules, so their own items
@@ -70,7 +76,7 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
     private fun wearingKitHere(id: UUID): Boolean {
         val k = kitted[id] ?: return false
         val area = areas[id] ?: return false
-        return area.kit != null && area.arena == k.arena && id !in restoreFailed && hasStash(id)
+        return area.kit != null && area.arena == k.arena && !restoreFailedState(id) && hasStash(id)
     }
 
     /** From the region callback (the same one the director gets). */
@@ -90,7 +96,7 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
             Action.RESTORE_THEN_STASH_AND_GIVE -> {
                 val k = kitted[id]
                 // Same arena and kit re-reported (the region watcher was reset): already wearing it, keep the stash.
-                if (k != null && id !in restoreFailed && k.arena == to!!.arena && k.kit == to.kit) return
+                if (k != null && !restoreFailedState(id) && k.arena == to!!.arena && k.kit == to.kit) return
                 // A stash that cannot be restored blocks a new one: the player keeps what they have on.
                 if (restore(p)) stashAndGive(p, to!!)
             }
@@ -122,6 +128,7 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
         val file = stashFile(id)
         if (!hasStash(id)) {
             kitted.remove(id)
+            if (id !in spent) clearFailed(id, p.name) // a marker without a stash (crash after the restore) means nothing
             return true
         }
         if (p.isDead) return false
@@ -137,7 +144,7 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
         try {
             p.closeInventory()
             val size = inv.contents.size
-            val held = if (id in restoreFailed) ownSince(inv.contents.toList(), kitted[id]?.kit) else emptyList()
+            val held = if (restoreFailedState(id)) ownSince(inv.contents.toList(), kitted[id]?.kit ?: markerKit(id)) else emptyList()
             val contents = arrayOfNulls<ItemStack>(size)
             for (i in 0 until minOf(size, items.size)) contents[i] = items[i]
             inv.contents = contents
@@ -152,8 +159,8 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
             return false
         }
         kitted.remove(id)
-        restoreFailed.remove(id)
         discard(id, file, p.name)
+        clearFailed(id, p.name) // after the stash is gone: a crash in between only leaves a harmless marker
         p.sendMessage("PvpBots: your own items are back.")
         return true
     }
@@ -267,6 +274,12 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
         awaitingRespawn.remove(id)
         spent.remove(id)
         restoreFailed.remove(id)
+        failedMarker(id).delete()
+    }
+
+    /** Self-test: forget failed restores held in memory only (what a restart does); the marker file stays. */
+    internal fun forgetFailuresInMemory(id: UUID) {
+        restoreFailed.remove(id)
     }
 
     private fun stashAndGive(p: Player, area: AreaRef): Boolean {
@@ -278,6 +291,8 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
         }
         val file = stashFile(id)
         if (file.exists() || id in spent) return false // never overwrite a stash
+        // A failure marker without a stash is stale (the inventory is entirely the player's and is stashed now).
+        clearFailed(id, p.name)
         // Cursor and crafting-grid items go back into the inventory; what vanilla drops because it is full is captured
         // and saved after the slots (restore hands those back with addItem).
         captured.clear()
@@ -364,8 +379,29 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
         return own
     }
 
+    /** The kit name a [failedMarker] holds, if any. */
+    private fun markerKit(id: UUID): String? =
+        runCatching { failedMarker(id).readText(Charsets.UTF_8).trim() }.getOrNull()?.takeIf { it.isNotEmpty() }
+
+    /** Clears the failed state; a marker that cannot be deleted is only logged (worst case: kit items handed back as own). */
+    private fun clearFailed(id: UUID, name: String) {
+        restoreFailed.remove(id)
+        val m = failedMarker(id)
+        if (m.exists() && !m.delete()) {
+            plugin.logger.warning("Could not delete ${m.absolutePath} for $name; delete it by hand (until then their kit-arena drops follow vanilla rules)")
+        }
+    }
+
     private fun failed(p: Player, file: File, e: Throwable) {
         restoreFailed += p.uniqueId
+        val marker = failedMarker(p.uniqueId)
+        if (!marker.exists()) {
+            try {
+                ArenaRegistry.writeDurably(marker, (kitted[p.uniqueId]?.kit ?: "").toByteArray(Charsets.UTF_8))
+            } catch (e2: Exception) {
+                plugin.logger.log(Level.SEVERE, "Could not write ${marker.absolutePath} for ${p.name}; their failed restore is remembered until restart only", e2)
+            }
+        }
         plugin.logger.log(Level.SEVERE, "Inventory stash of ${p.name} (${p.uniqueId}) could not be restored; the file is kept: ${file.absolutePath}", e)
         p.sendMessage("Your items could not be restored automatically; an admin has been notified.")
     }
