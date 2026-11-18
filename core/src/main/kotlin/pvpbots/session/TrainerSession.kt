@@ -4,7 +4,7 @@ import pvpbots.skill.Outcome
 import java.util.UUID
 
 /** One player's personal 1v1 duel: queue -> countdown -> fight -> rematch wait. Pure; time is passed in. */
-class TrainerSession(private val owner: UUID, private val area: AreaRef, private val t: Timings) {
+class TrainerSession(private val owner: UUID, area: AreaRef, private val t: Timings) {
     enum class State { QUEUED, COUNTDOWN, FIGHTING, REMATCH_WAIT, ENDED }
 
     val key: SessionKey = SessionKey.Trainer(owner)
@@ -13,6 +13,15 @@ class TrainerSession(private val owner: UUID, private val area: AreaRef, private
     private var phaseStartMs = 0L
     private var started = false
     private var spawnPending = false
+
+    /** The area as last reported (same region; an admin may change its kit or flags mid-session). */
+    var area: AreaRef = area
+        private set
+
+    /** Same region, new details: the next round's spawn uses them. */
+    fun areaChanged(to: AreaRef) {
+        area = to
+    }
 
     fun state(): State = state
     fun botId(): UUID? = bot

@@ -52,7 +52,13 @@ class AreaDirector(
 
     fun onAreaChange(player: UUID, from: AreaRef?, to: AreaRef?, nowMs: Long) {
         if (shutDown || port.isBot(player)) return
-        if (from != null && to != null && from.world == to.world && from.regionId == to.regionId) return
+        if (from != null && to != null && from.world == to.world && from.regionId == to.regionId && from.role == to.role) {
+            // Same region re-reported, maybe with a new kit or flags (`/pvpbots arena kit` mid-session): the session goes
+            // on (no round ends, no rating change) and the next spawn uses the new details.
+            if (from != to) updateArea(player, to)
+            playerArea[player] = to
+            return
+        }
         if (from != null) leave(player, from, nowMs)
         if (to != null) enter(player, to, nowMs)
         if (to != null) playerArea[player] = to else playerArea.remove(player)
@@ -201,6 +207,16 @@ class AreaDirector(
                     ?: AllySquad(to, t).also { squads[key] = it; areas[key] = to; streak.reset(key) }
                 run(s.playerEntered(player, nowMs), nowMs)
             }
+        }
+    }
+
+    private fun updateArea(player: UUID, to: AreaRef) {
+        when (to.role) {
+            Role.TRAINER -> trainers[player]?.let { s ->
+                s.areaChanged(to)
+                areas[s.key] = to
+            }
+            Role.ALLY -> SessionKey.Squad(to.world, to.regionId).let { k -> if (k in squads) areas[k] = to }
         }
     }
 

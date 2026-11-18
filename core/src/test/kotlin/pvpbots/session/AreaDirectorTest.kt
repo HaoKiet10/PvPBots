@@ -210,6 +210,25 @@ class AreaDirectorTest {
         assertTrue(t === d.trainerFor(P1))
     }
 
+    @Test fun sameRegionNewKit_keepsSession_nextSpawnUsesNewArea() {
+        director(10)
+        val kitA = ARENA.copy(arena = "a1", kit = "iron")
+        val kitB = kitA.copy(kit = "diamond")
+        enter(P1, kitA); d.tick(3000)
+        val t = d.trainerFor(P1)
+        d.onAreaChange(P1, kitA, kitB, 3500)
+        assertTrue(t === d.trainerFor(P1))
+        assertTrue(port.removed.isEmpty())
+        assertTrue(port.roundEnds.isEmpty())
+        d.onBotDeath(port.spawned[0].botId, 4000)
+        d.tick(9000)    // rematch delay 5 s
+        assertEquals(2, port.spawned.size)
+        assertEquals("diamond", port.spawned[1].area.kit)
+        // A later leave reports the new area as `from` and still ends the session.
+        d.onAreaChange(P1, kitB, null, 9500)
+        assertNull(d.trainerFor(P1))
+    }
+
     @Test fun quit_endsTrainer() {
         director(10)
         enter(P1, ARENA)
