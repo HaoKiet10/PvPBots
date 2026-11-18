@@ -5,6 +5,7 @@ import org.bukkit.plugin.java.JavaPlugin
 import org.bukkit.scheduler.BukkitTask
 import pvpbots.adapter.AdapterLoader
 import pvpbots.adapter.BotAdapter
+import pvpbots.arena.ArenaRecord
 import pvpbots.session.AreaDirector
 import pvpbots.session.AreaRef
 import pvpbots.slots.BotSlots
@@ -22,6 +23,8 @@ class PvpBotsPlugin : JavaPlugin() {
         private set
     lateinit var slots: BotSlots
         private set
+    lateinit var arenaService: ArenaService
+        private set
 
     private var flagsRegistered = false
     private var running = false
@@ -34,6 +37,9 @@ class PvpBotsPlugin : JavaPlugin() {
                 director.onAreaChange(player, from, to, botManager.nowMs())
 
             override fun maxBots(): Int = botManager.config.settings.maxBots
+
+            override fun arena(regionId: String): ArenaRecord? =
+                if (this@PvpBotsPlugin::arenaService.isInitialized) arenaService.registry.byRegion(regionId) else null
         })
         flagsRegistered = regionWatcher.registerFlags()
     }
@@ -63,6 +69,12 @@ class PvpBotsPlugin : JavaPlugin() {
         newDirector(null)
         PvpBotsApi.manager = botManager
 
+        val registry = ArenaRegistry(File(dataFolder, "arenas.yml"))
+        registry.warnings.forEach { logger.severe("arenas: $it") }
+        arenaService = ArenaService(this, registry, File(dataFolder, "arenas"))
+        botManager.arenaPads = { name -> arenaService.registry.get(name)?.padsB }
+        arenaService.resumeAll()
+
         server.pluginManager.registerEvents(DamageListener(botManager), this)
         server.pluginManager.registerEvents(BotLifecycleListener(this), this)
         regionWatcher.start()
@@ -88,6 +100,7 @@ class PvpBotsPlugin : JavaPlugin() {
         if (!running) return
         running = false
         tickTask?.cancel()
+        arenaService.stop()
         director.shutdown()
         botManager.removeAll()
         regionWatcher.stop()
@@ -98,6 +111,7 @@ class PvpBotsPlugin : JavaPlugin() {
         val tick = Bukkit.getCurrentTick().toLong()
         director.tick(tick * 50L)
         botManager.tickBots(tick)
+        TickIsolation.guard({ arenaService.tick() }) { e -> logger.log(Level.SEVERE, "Arena jobs failed this tick", e) }
     }
 
     /** Reads config.yml and logs every warning. */

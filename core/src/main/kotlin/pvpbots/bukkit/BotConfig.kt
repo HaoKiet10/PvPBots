@@ -1,7 +1,9 @@
 package pvpbots.bukkit
 
+import org.bukkit.Material
 import org.bukkit.configuration.ConfigurationSection
 import org.bukkit.configuration.file.YamlConfiguration
+import pvpbots.config.ArenaSettings
 import pvpbots.config.PluginSettings
 import pvpbots.profile.Difficulty
 import pvpbots.profile.DifficultyProfile
@@ -33,6 +35,14 @@ class BotConfig(
 
             val settings = PluginSettings.load(root)
             warnings += settings.warnings
+            val arenas = settings.value.arenas
+            val materials = arenas.materials.mapValues { (part, name) ->
+                val m = Material.matchMaterial(name)
+                if (m != null && m.isBlock && !m.isAir) return@mapValues m.name
+                val def = ArenaSettings.DEFAULT_MATERIALS.getValue(part)
+                warnings += "arenas.materials.${ArenaSettings.key(part)}: '$name' is not a solid block material, using default $def"
+                def
+            }
 
             val profiles = when (val d = root["difficulties"]) {
                 null -> {
@@ -65,7 +75,8 @@ class BotConfig(
             }
 
             val skins = SkinPool.load(root["skins"], warnings)
-            return BotConfig(settings.value, profiles, kits, skins) to warnings
+            val plugin = settings.value.copy(arenas = arenas.copy(materials = materials))
+            return BotConfig(plugin, profiles, kits, skins) to warnings
         }
 
         @Suppress("UNCHECKED_CAST")

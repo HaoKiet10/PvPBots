@@ -9,10 +9,10 @@ libraries:
 commands:
   pvpbots:
     description: PvP bots administration.
-    usage: /pvpbots <status|reload|clear|selftest <trainer|ally|load N> confirm>
+    usage: /pvpbots <status|reload|clear|arena <create|remove|list|kit> ...|selftest <trainer|ally|load N> confirm>
 permissions:
   pvpbots.admin:
-    description: Use /pvpbots status, reload and clear.
+    description: Use /pvpbots status, reload, clear and arena.
     default: op
   pvpbots.debug:
     description: Use /pvpbots selftest.

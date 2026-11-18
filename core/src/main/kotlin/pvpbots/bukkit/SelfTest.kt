@@ -35,7 +35,7 @@ import java.time.Instant
 import java.util.UUID
 
 /**
- * Scripted in-server checks (T1-T6 trainer, A1-A2 ally; D1 is checked by the Gradle `selfTest` task after the
+ * Scripted in-server checks (T1-T6 trainer, A1-A2 ally, A3-A4 + T7 arenas in [ArenaSelfTest]; D1 is checked by the Gradle `selfTest` task after the
  * server exits). Runs in the flat world [WORLD] with dummy owners: fake players spawned through the adapter but NOT
  * registered as bots (so the director and the damage policy treat them as real players). Areas are hand-built
  * [AreaRef]s passed to `director.onAreaChange` directly. The script is a sequence that yields "wait N ticks".
@@ -127,10 +127,11 @@ class SelfTest(
     // ---- the script ----
 
     private suspend fun SequenceScope<Int>.run() {
+        if (mode == Mode.All) ArenaSelfTest.purgeStale(plugin)
         world = setupWorld()
         yield(2)
         when (mode) {
-            Mode.All -> { trainerChecks(); allyChecks() }
+            Mode.All -> { trainerChecks(); allyChecks(); with(ArenaSelfTest(this@SelfTest, plugin, world)) { run() } }
             Mode.Trainer -> trainerChecks()
             Mode.Ally -> allyChecks()
             is Mode.Load -> loadCheck(mode.bots)
@@ -460,23 +461,13 @@ class SelfTest(
 
     // ---- helpers ----
 
-    private suspend fun SequenceScope<Int>.waitUntil(maxTicks: Int, cond: () -> Boolean): Int {
-        var t = 0
-        while (!cond()) {
-            if (t >= maxTicks) return -1
-            yield(1)
-            t++
-        }
-        return t
-    }
-
     private fun now(): Long = Bukkit.getCurrentTick().toLong()
 
-    private fun nowMs(): Long = manager.nowMs()
+    internal fun nowMs(): Long = manager.nowMs()
 
-    private fun trainerBot(key: SessionKey): BotRecord? = manager.records().firstOrNull { it.key == key }
+    internal fun trainerBot(key: SessionKey): BotRecord? = manager.records().firstOrNull { it.key == key }
 
-    private fun check(name: String, ok: Boolean, measured: String) {
+    internal fun check(name: String, ok: Boolean, measured: String) {
         if (ok) passed++ else failed++
         val line = "${if (ok) "PASS" else "FAIL"} $name: $measured"
         lines += line
@@ -508,7 +499,7 @@ class SelfTest(
         return AreaRef(w.name, id, role, d, count, Bounds(BlockPos(cx - radius, y - 4, cz - radius), BlockPos(cx + radius, y + 12, cz + radius)))
     }
 
-    private fun spawnDummy(label: String, x: Int, z: Int, w: World = world): BotHandle {
+    internal fun spawnDummy(label: String, x: Int, z: Int, w: World = world): BotHandle {
         val loc = Location(w, x + 0.5, groundY(x, z, w).toDouble(), z + 0.5)
         val id = UUID.randomUUID()
         val h = manager.adapter.spawn(BotSpec("St${label}_${id.toString().take(4)}", id, null, null), loc)
@@ -518,7 +509,7 @@ class SelfTest(
         return h
     }
 
-    private fun removeDummy(h: BotHandle) {
+    internal fun removeDummy(h: BotHandle) {
         manager.adapter.remove(h)
         dummies.remove(h)
     }
@@ -633,4 +624,15 @@ class SelfTest(
         private val TRAINER_NAME = Regex("^Trainer_[0-9a-f]{4}$")
         private val ALLY_NAME = Regex("^Ally_[0-9a-f]{4}$")
     }
+}
+
+/** Yields one tick at a time until [cond] holds; returns the ticks waited, or -1 after [maxTicks]. */
+internal suspend fun SequenceScope<Int>.waitUntil(maxTicks: Int, cond: () -> Boolean): Int {
+    var t = 0
+    while (!cond()) {
+        if (t >= maxTicks) return -1
+        yield(1)
+        t++
+    }
+    return t
 }

@@ -29,6 +29,17 @@ skill:
   win-bonus: 4.0
   loss-penalty: 2.0
 
+# Arenas built with /pvpbots arena create. Materials are Bukkit block names (e.g. SMOOTH_STONE).
+arenas:
+  blocks-per-tick: 4000       # blocks changed per server tick while an arena is built or removed (min 1)
+  materials:
+    floor: SMOOTH_STONE
+    wall: STONE_BRICKS
+    light: SEA_LANTERN        # floor lights
+    pad-a: BLUE_CONCRETE      # player spawn pads
+    pad-b: RED_CONCRETE       # trainer spawn pads
+    cover: STONE_BRICKS       # cover pillars (squad and team arenas)
+
 # Bot skins. Each entry is a signed Mojang texture property: the base64 "value" and its "signature", copied from
 # a player profile fetched with signatures, e.g.
 #   https://sessionserver.mojang.com/session/minecraft/profile/<uuid-without-dashes>?unsigned=false

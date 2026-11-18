@@ -54,6 +54,9 @@ class BotManager(
     /** Current time in director milliseconds (server tick * 50). */
     var nowMs: () -> Long = { Bukkit.getCurrentTick() * 50L }
 
+    /** B pads (trainer spawn pads) of a plugin-built arena by name; set by the plugin. */
+    var arenaPads: (String) -> List<BlockPos>? = { null }
+
     /** Test hook: told about every bot right after it is registered. */
     var spawnObserver: ((BotRecord) -> Unit)? = null
 
@@ -107,7 +110,8 @@ class BotManager(
             if (near == null || near.world != world) return null
             val grid = BukkitBlockGrid(world)
             val nl = near.location
-            val point = SpawnPointFinder.find(grid, BlockPos(nl.blockX, nl.blockY, nl.blockZ), area.bounds, rng)
+            val point = area.arena?.let { freePad(it, world, nl) }
+                ?: SpawnPointFinder.find(grid, BlockPos(nl.blockX, nl.blockY, nl.blockZ), area.bounds, rng)
             if (point == null) {
                 logger.warning("Bot spawn: no standable block in region ${area.regionId} near ${near.name}")
                 return null
@@ -142,6 +146,19 @@ class BotManager(
             logFailure(e, "Bot spawn failed for session $key in ${area.world}/${area.regionId}")
             return null
         }
+    }
+
+    /** Standing position on the B pad nearest [near] with no bot within 1 block, or null (no pads / all taken). */
+    private fun freePad(arena: String, world: org.bukkit.World, near: Location): BlockPos? {
+        val pads = arenaPads(arena) ?: return null
+        return pads.map { BlockPos(it.x, it.y + 1, it.z) }
+            .filter { s ->
+                bots.values.none { b ->
+                    val l = b.player.location
+                    l.world == world && l.distanceSquared(Location(world, s.x + 0.5, s.y.toDouble(), s.z + 0.5)) <= 1.0
+                }
+            }
+            .minByOrNull { s -> near.distanceSquared(Location(world, s.x + 0.5, s.y.toDouble(), s.z + 0.5)) }
     }
 
     /**

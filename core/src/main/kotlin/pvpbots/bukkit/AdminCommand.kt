@@ -5,8 +5,9 @@ import org.bukkit.command.CommandExecutor
 import org.bukkit.command.CommandSender
 import org.bukkit.command.TabCompleter
 
-/** `/pvpbots status | reload | clear | selftest <trainer|ally|load N> confirm` (admins only). */
+/** `/pvpbots status | reload | clear | arena … | selftest <trainer|ally|load N> confirm` (admins only). */
 class AdminCommand(private val plugin: PvpBotsPlugin) : CommandExecutor, TabCompleter {
+    private val arena = ArenaCommand(plugin)
 
     override fun onCommand(sender: CommandSender, command: Command, label: String, args: Array<out String>): Boolean {
         val sub = args.firstOrNull()?.lowercase()
@@ -25,6 +26,7 @@ class AdminCommand(private val plugin: PvpBotsPlugin) : CommandExecutor, TabComp
                 plugin.clear()
                 sender.sendMessage("PvpBots: removed $n bot(s). Players still inside a bot region get their bots back within a few seconds.")
             }
+            "arena" -> arena.run(sender, args.drop(1))
             "selftest" -> selfTest(sender, args.drop(1))
             else -> return false
         }
@@ -80,8 +82,12 @@ class AdminCommand(private val plugin: PvpBotsPlugin) : CommandExecutor, TabComp
     }
 
     override fun onTabComplete(sender: CommandSender, command: Command, alias: String, args: Array<out String>): List<String> {
+        if (args.size >= 2 && args[0].equals("arena", true)) {
+            if (!sender.hasPermission("pvpbots.admin")) return emptyList()
+            return arena.complete(args.drop(1)).filter { it.startsWith(args.last(), ignoreCase = true) }
+        }
         val options = when (args.size) {
-            1 -> listOf("status", "reload", "clear", "selftest")
+            1 -> listOf("status", "reload", "clear", "arena", "selftest")
             2 -> if (args[0].equals("selftest", true)) listOf("trainer", "ally", "load") else emptyList()
             3 -> if (args[0].equals("selftest", true) && !args[1].equals("load", true)) listOf("confirm") else emptyList()
             4 -> if (args[0].equals("selftest", true) && args[1].equals("load", true)) listOf("confirm") else emptyList()
@@ -91,6 +97,6 @@ class AdminCommand(private val plugin: PvpBotsPlugin) : CommandExecutor, TabComp
     }
 
     private companion object {
-        val ADMIN_SUBCOMMANDS = setOf("status", "reload", "clear")
+        val ADMIN_SUBCOMMANDS = setOf("status", "reload", "clear", "arena")
     }
 }

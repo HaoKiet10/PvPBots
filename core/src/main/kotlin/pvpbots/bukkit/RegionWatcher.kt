@@ -17,6 +17,7 @@ import org.bukkit.Bukkit
 import org.bukkit.entity.Player
 import org.bukkit.plugin.java.JavaPlugin
 import org.bukkit.scheduler.BukkitTask
+import pvpbots.arena.ArenaRecord
 import pvpbots.math.BlockPos
 import pvpbots.math.Bounds
 import pvpbots.profile.Difficulty
@@ -37,6 +38,9 @@ class RegionWatcher(private val plugin: JavaPlugin, private val events: Events) 
     interface Events {
         fun onAreaChange(player: UUID, from: AreaRef?, to: AreaRef?)
         fun maxBots(): Int
+
+        /** The plugin-built arena whose region has this id, if any. */
+        fun arena(regionId: String): ArenaRecord? = null
     }
 
     private val current = HashMap<UUID, AreaRef>()
@@ -101,10 +105,13 @@ class RegionWatcher(private val plugin: JavaPlugin, private val events: Events) 
         events.onAreaChange(player, old, area)
     }
 
+    /** No area at all while the player stands in the region of an arena that is not READY (being built or removed). */
     private fun resolve(world: String, regions: Iterable<ProtectedRegion>): AreaRef? {
         val infos = regions.filter { it !is GlobalProtectedRegion }.map { r ->
             val min = r.minimumPoint
             val max = r.maximumPoint
+            val arena = events.arena(r.id)?.takeIf { it.world == world }
+            if (arena != null && arena.status != ArenaRecord.Status.READY) return null
             RegionInfo(
                 world = world,
                 id = r.id,
@@ -113,6 +120,8 @@ class RegionWatcher(private val plugin: JavaPlugin, private val events: Events) 
                 difficulty = r.getFlag(DIFFICULTY),
                 count = r.getFlag(COUNT),
                 bounds = Bounds(BlockPos(min.x(), min.y(), min.z()), BlockPos(max.x(), max.y(), max.z())),
+                arena = arena?.name,
+                kit = arena?.kit,
             )
         }
         return AreaResolver.resolve(infos, events.maxBots())
