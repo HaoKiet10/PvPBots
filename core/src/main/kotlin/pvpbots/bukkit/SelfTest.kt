@@ -35,7 +35,7 @@ import java.time.Instant
 import java.util.UUID
 
 /**
- * Scripted in-server checks (T1-T6 trainer, A1-A2 ally, A3-A6 + T7 arenas in [ArenaSelfTest], K1-K2 kit arenas in [KitSelfTest]; D1 is checked by the Gradle `selfTest` task after the
+ * Scripted in-server checks (T1-T6 trainer, A1-A2 ally, A3-A6 + T7 arenas in [ArenaSelfTest], K1-K3 kit arenas in [KitSelfTest]; D1 is checked by the Gradle `selfTest` task after the
  * server exits). Runs in the flat world [WORLD] with dummy owners: fake players spawned through the adapter but NOT
  * registered as bots (so the director and the damage policy treat them as real players). Areas are hand-built
  * [AreaRef]s passed to `director.onAreaChange` directly. The script is a sequence that yields "wait N ticks".
@@ -504,9 +504,9 @@ class SelfTest(
         return AreaRef(w.name, id, role, d, count, Bounds(BlockPos(cx - radius, y - 4, cz - radius), BlockPos(cx + radius, y + 12, cz + radius)))
     }
 
-    internal fun spawnDummy(label: String, x: Int, z: Int, w: World = world): BotHandle {
+    /** [id]: reuse a removed dummy's UUID (stands in for a respawn, which dummies cannot do). */
+    internal fun spawnDummy(label: String, x: Int, z: Int, w: World = world, id: UUID = UUID.randomUUID()): BotHandle {
         val loc = Location(w, x + 0.5, groundY(x, z, w).toDouble(), z + 0.5)
-        val id = UUID.randomUUID()
         val h = manager.adapter.spawn(BotSpec("St${label}_${id.toString().take(4)}", id, null, null), loc)
         dummies += h
         fakeIds += id

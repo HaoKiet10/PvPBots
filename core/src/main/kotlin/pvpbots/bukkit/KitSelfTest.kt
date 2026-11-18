@@ -12,6 +12,7 @@ import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
 import org.bukkit.event.HandlerList
 import org.bukkit.event.Listener
+import org.bukkit.event.entity.EntityPickupItemEvent
 import org.bukkit.event.entity.PlayerDeathEvent
 import org.bukkit.event.player.PlayerDropItemEvent
 import org.bukkit.inventory.ItemStack
@@ -32,7 +33,7 @@ import pvpbots.session.Role
 import pvpbots.session.SessionKey
 
 /**
- * Kit-arena self-test checks (K1, K2), run by [SelfTest] in [SelfTest.Mode.All]. The test player is a dummy (a real
+ * Kit-arena self-test checks (K1, K2, K3), run by [SelfTest] in [SelfTest.Mode.All]. The test player is a dummy (a real
  * server-side `Player`, but not in the server's player list), so the region callback is called directly the way the
  * plugin's RegionWatcher hook calls it, and join is driven through [KitArenaService.onJoin] (the listener's body).
  */
@@ -49,6 +50,7 @@ internal class KitSelfTest(private val t: SelfTest, private val plugin: PvpBotsP
         try {
             kitArena()
             stashOnJoin()
+            failedRestore()
         } finally {
             HandlerList.unregisterAll(this@KitSelfTest)
         }
@@ -110,8 +112,12 @@ internal class KitSelfTest(private val t: SelfTest, private val plugin: PvpBotsP
         val dropped = world.dropItem(p.location, ItemStack(Material.IRON_SWORD))
         val dropEvent = PlayerDropItemEvent(p, dropped)
         Bukkit.getPluginManager().callEvent(dropEvent)
-        dropped.remove()
         val dropCancelled = dropEvent.isCancelled
+        // Pick-up attempt inside (refill and restore replace the whole inventory, so nothing may come in).
+        val pickupEvent = EntityPickupItemEvent(p, dropped, 0)
+        Bukkit.getPluginManager().callEvent(pickupEvent)
+        dropped.remove()
+        val pickupCancelled = pickupEvent.isCancelled
 
         // Leave.
         kits.onAreaChange(p, area, null)
@@ -140,24 +146,39 @@ internal class KitSelfTest(private val t: SelfTest, private val plugin: PvpBotsP
         val deathOk = death != null && death.drops.isEmpty() && death.keepLevel && death.droppedExp == 0
         val stashAfterDeath = stashFile.exists() && sameSlots(runCatching { StashCodec.decode(stashFile.readBytes()) }.getOrNull(), original)
 
+        // Respawn: a dummy cannot respawn, so the dead one is replaced by a live dummy with the same UUID outside the
+        // arena, and the real respawn hook runs (restore on the next tick, judged by the current area).
+        runCatching { t.removeDummy(h) }
+        yield(1)
+        val h2 = runCatching { t.spawnDummy("Kit", origin.x + 40, origin.z, id = id) }.getOrNull()
+        var respawnDiff: String? = "no live dummy with the same UUID"
+        var stashGoneAfterRespawn = false
+        if (h2 != null) {
+            kits.onRespawn(h2.bukkit)
+            yield(2)
+            respawnDiff = diff(original, slots(h2.bukkit))
+            stashGoneAfterRespawn = !stashFile.exists()
+        }
+
         t.check(
             "K1 kit arena stash/restore",
             originalCount >= 9 && stashed && stashMatches && kitAtEnter == null && healed && spawned >= 0 && botKit == null &&
                 refilled && kitAfterSpawn == null && notRestashed && dropCancelled && leaveDiff == null && stashGoneAfterLeave &&
-                stashedAgain && releaseDiff == null && stashGoneAfterRelease && stashedForDeath && deathOk && stashAfterDeath,
+                stashedAgain && releaseDiff == null && stashGoneAfterRelease && stashedForDeath && deathOk && stashAfterDeath &&
+                pickupCancelled && respawnDiff == null && stashGoneAfterRespawn,
             "test items in $originalCount slots; enter: stash file $stashed (decodes to the original slots: $stashMatches), " +
                 "kit ${kitAtEnter ?: "iron exactly"}, health ${"%.1f/%.1f".format(healthAtEnter, max)} food $foodAtEnter (was 12/8), full: $healed; " +
                 "trainer after $spawned ticks, its kit ${botKit ?: "iron"}; refilled on spawn (apples 1 -> 4): $refilled, " +
-                "kit after spawn ${kitAfterSpawn ?: "iron exactly"}, stash unchanged: $notRestashed; drop cancelled: $dropCancelled; " +
+                "kit after spawn ${kitAfterSpawn ?: "iron exactly"}, stash unchanged: $notRestashed; drop cancelled: $dropCancelled; pick-up cancelled: $pickupCancelled; " +
                 "leave: ${leaveDiff ?: "every slot identical"}, stash deleted: $stashGoneAfterLeave; " +
                 "kit change (${setKit.lastOrNull()}): stashed $stashedAgain, ${releaseDiff ?: "every slot identical"}, stash deleted: $stashGoneAfterRelease; " +
                 "death${killed?.let { " (setHealth(0) threw $it)" } ?: ""}: stashed $stashedForDeath, event ${death?.let { "drops ${it.drops.size}, keepLevel ${it.keepLevel}, droppedExp ${it.droppedExp}" } ?: "not seen"}, " +
-                "stash intact after death: $stashAfterDeath; slot comparisons equal only up to NBT key order: $reordered",
+                "stash intact after death: $stashAfterDeath; respawn (live dummy, same UUID): ${respawnDiff ?: "every slot identical"}, " +
+                "stash deleted: $stashGoneAfterRespawn; slot comparisons equal only up to NBT key order: $reordered",
         )
-        // A dummy cannot respawn: drop its test stash by hand.
         kits.forget(id)
         stashFile.delete()
-        runCatching { t.removeDummy(h) }
+        h2?.let { runCatching { t.removeDummy(it) } }
         cleanupArena(name)
     }
 
@@ -191,6 +212,107 @@ internal class KitSelfTest(private val t: SelfTest, private val plugin: PvpBotsP
         )
         if (file.exists()) file.delete()
         runCatching { t.removeDummy(h) }
+    }
+
+    /**
+     * K3: a restore that fails leaves the player their items under vanilla rules: no new stash over the broken one, no
+     * refill, pick-ups and drops allowed, a death drops everything; the next successful restore (after the respawn)
+     * gives the stash back AND hands back what the player gathered meanwhile.
+     */
+    private suspend fun SequenceScope<Int>.failedRestore() {
+        val name = "selftest_k3"
+        val origin = BlockPos(1200, world.getHighestBlockYAt(1200, 0), 0)
+        service.createAt(world, origin, Facing.NORTH, name, Preset.DUEL, "iron", null)
+        val ready = waitUntil(200) { registry().get(name)?.status == ArenaRecord.Status.READY }
+        val rec = registry().get(name)
+        if (ready < 0 || rec == null) {
+            t.check("K3 failed restore keeps own items", false, "arena never became READY (record ${rec?.status})")
+            cleanupArena(name)
+            return
+        }
+        val layout = ArenaLayout.generate(rec.preset, rec.origin, rec.facing)
+        val area = AreaRef(world.name, rec.regionId, Role.TRAINER, Difficulty.EASY, 1, layout.region, arena = rec.name, kit = rec.kit)
+        val h = t.spawnDummy("Fail", origin.x + 2, origin.z + 2)
+        val p = h.bukkit
+        val id = p.uniqueId
+        yield(2)
+        giveTestItems(p)
+        val original = slots(p)
+        val file = kits.stashFile(id)
+
+        kits.onAreaChange(p, null, area)
+        val good = if (file.exists()) file.readBytes() else null
+        val junk = "not a stash".toByteArray()
+        ArenaRegistry.writeDurably(file, junk)
+
+        // Leave: the restore fails; file and inventory (the kit) stay as they are.
+        kits.onAreaChange(p, area, null)
+        val fileKept = file.exists() && file.readBytes().contentEquals(junk)
+        val kitKept = kitMismatch(p.inventory, "iron", allowTotem = false)
+
+        // Outside: picking up and dropping are vanilla.
+        val picked = ItemStack(Material.EMERALD, 3)
+        picked.editMeta { it.displayName(Component.text("Picked up")) }
+        val ent = world.dropItem(p.location, picked.clone())
+        val pickup = EntityPickupItemEvent(p, ent, 0)
+        Bukkit.getPluginManager().callEvent(pickup)
+        val drop = PlayerDropItemEvent(p, ent)
+        Bukkit.getPluginManager().callEvent(drop)
+        ent.remove()
+        p.inventory.addItem(picked.clone())
+
+        // Back into the same kit arena: no new stash over the broken one, and a new round does not wipe the inventory.
+        kits.onAreaChange(p, null, area)
+        val noRestash = file.readBytes().contentEquals(junk)
+        kits.refill(id)
+        val keptAfterRefill = p.inventory.containsAtLeast(picked, 3)
+        val dropInside = PlayerDropItemEvent(p, world.dropItem(p.location, ItemStack(Material.DIRT)))
+        Bukkit.getPluginManager().callEvent(dropInside)
+        dropInside.itemDrop.remove()
+
+        // Die (inside the arena, even): vanilla drops, the gathered emeralds are dropped, not destroyed.
+        lastDeath = null
+        runCatching { p.health = 0.0 }
+        yield(1)
+        val death = lastDeath
+        val emeraldsDropped = death != null && death.drops.any { it.isSimilar(picked) && it.amount == 3 }
+        world.getNearbyEntities(p.location, 4.0, 4.0, 4.0).filterIsInstance<org.bukkit.entity.Item>().forEach { it.remove() }
+
+        // Respawn (live dummy, same UUID), gather something else, the admin fixes the stash: the respawn hook restores.
+        runCatching { t.removeDummy(h) }
+        yield(1)
+        val h2 = runCatching { t.spawnDummy("Fail", origin.x + 40, origin.z, id = id) }.getOrNull()
+        var ownDiff: String? = "no live dummy with the same UUID"
+        var gatheredKept = false
+        var deleted = false
+        if (h2 != null && good != null) {
+            val p2 = h2.bukkit
+            val gathered = ItemStack(Material.DIAMOND, 2)
+            gathered.editMeta { it.displayName(Component.text("Picked up 2")) }
+            p2.inventory.addItem(gathered.clone())
+            ArenaRegistry.writeDurably(file, good)
+            kits.onRespawn(p2)
+            yield(2)
+            val after = slots(p2)
+            // Every stashed slot back in place; the gathered diamonds handed back on top (in a free slot).
+            ownDiff = diff(original.mapIndexed { i, b -> b ?: after.getOrNull(i) }, after)
+            gatheredKept = p2.inventory.containsAtLeast(gathered, 2)
+            deleted = !file.exists()
+        }
+        t.check(
+            "K3 failed restore keeps own items",
+            good != null && fileKept && kitKept == null && !pickup.isCancelled && !drop.isCancelled && noRestash &&
+                keptAfterRefill && !dropInside.isCancelled && emeraldsDropped && ownDiff == null && gatheredKept && deleted,
+            "stash made: ${good != null}; broken stash on leave: file kept $fileKept, inventory ${kitKept ?: "still the kit"}; " +
+                "outside: pick-up cancelled ${pickup.isCancelled}, drop cancelled ${drop.isCancelled}; re-enter: stash untouched $noRestash, " +
+                "emeralds kept after a refill: $keptAfterRefill, drop inside cancelled ${dropInside.isCancelled}; " +
+                "death: ${death?.let { "drops ${it.drops.size}, gathered emeralds among them: $emeraldsDropped" } ?: "not seen"}; " +
+                "stash fixed + respawn: ${ownDiff ?: "every stashed slot identical"}, gathered diamonds kept: $gatheredKept, stash deleted: $deleted",
+        )
+        kits.forget(id)
+        if (file.exists()) file.delete()
+        h2?.let { runCatching { t.removeDummy(it) } }
+        cleanupArena(name)
     }
 
     private fun giveTestItems(p: Player) {

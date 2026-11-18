@@ -52,6 +52,20 @@ class KitApplier(val kits: Map<String, Kit>) {
         p.saturation = 5f
     }
 
+    /** One fresh stack of every item [kitName] gives a player (armor, weapons, food, bow, arrows, shield). */
+    fun templates(kitName: String): List<ItemStack> {
+        val kit = kits[kitName] ?: return emptyList()
+        val out = ArrayList<ItemStack>()
+        kit.armor.filterNotNull().forEach { out += ItemStack(it) }
+        kit.sword?.let { out += ItemStack(it) }
+        kit.axe?.let { out += ItemStack(it) }
+        kit.food?.let { out += ItemStack(it, kit.foodAmount.coerceIn(1, it.maxStackSize)) }
+        kit.bow?.let { out += ItemStack(it) }
+        if (kit.arrows > 0) out += ItemStack(Material.ARROW, kit.arrows.coerceAtMost(64))
+        if (kit.shield) out += ItemStack(Material.SHIELD)
+        return out
+    }
+
     /** Clears [inv] (main, armor, off-hand) and puts the kit in: armor, hotbar per [KitSlots], shield off-hand. Unknown kit: empty. */
     fun fill(inv: PlayerInventory, kitName: String) {
         inv.clear()

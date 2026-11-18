@@ -1,7 +1,10 @@
 package pvpbots.bukkit
 
 import org.bukkit.Bukkit
+import org.bukkit.entity.Item
 import org.bukkit.entity.Player
+import org.bukkit.event.entity.EntityPickupItemEvent
+import org.bukkit.event.player.PlayerDropItemEvent
 import org.bukkit.event.entity.PlayerDeathEvent
 import org.bukkit.inventory.ItemStack
 import pvpbots.arena.Action
@@ -40,14 +43,35 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
     /** Restored, but the file could neither be deleted nor moved aside: never restored again while the server runs. */
     private val spent = HashSet<UUID>()
 
+    /**
+     * A restore of this player's stash failed: they still have whatever they had (kit plus anything gathered since), which
+     * is now theirs. No kit rules apply to them (vanilla drops, no refill), and the next successful restore hands those
+     * items back on top of the stash. Kept across quit/join for the rest of the server run.
+     */
+    private val restoreFailed = HashSet<UUID>()
+
+    /** Set while [stashAndGive] closes the player's inventory: items vanilla drops then are captured into the stash. */
+    private var capturing: UUID? = null
+    private val captured = ArrayList<Item>()
+
     private val kits get() = plugin.botManager.config.kits
 
     fun stashFile(id: UUID) = File(dir, "$id.dat")
 
     fun hasStash(id: UUID): Boolean = id !in spent && stashFile(id).exists()
 
-    /** Wearing an arena kit: drops are blocked and a death drops nothing. */
-    fun inKitArena(p: Player): Boolean = p.uniqueId in kitted
+    /**
+     * Wearing this arena's kit inside that arena (stash safe on disk, no failed restore): drops and pick-ups are blocked,
+     * a death drops nothing, and a new round refills the kit. Anyone else follows vanilla rules, so their own items
+     * are never destroyed.
+     */
+    fun inKitArena(p: Player): Boolean = wearingKitHere(p.uniqueId)
+
+    private fun wearingKitHere(id: UUID): Boolean {
+        val k = kitted[id] ?: return false
+        val area = areas[id] ?: return false
+        return area.kit != null && area.arena == k.arena && id !in restoreFailed && hasStash(id)
+    }
 
     /** From the region callback (the same one the director gets). */
     fun onAreaChange(p: Player, from: AreaRef?, to: AreaRef?) {
@@ -66,7 +90,7 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
             Action.RESTORE_THEN_STASH_AND_GIVE -> {
                 val k = kitted[id]
                 // Same arena and kit re-reported (the region watcher was reset): already wearing it, keep the stash.
-                if (k != null && k.arena == to!!.arena && k.kit == to.kit) return
+                if (k != null && id !in restoreFailed && k.arena == to!!.arena && k.kit == to.kit) return
                 // A stash that cannot be restored blocks a new one: the player keeps what they have on.
                 if (restore(p)) stashAndGive(p, to!!)
             }
@@ -82,14 +106,16 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
             kitted.remove(owner) // never clear an inventory whose owner's items are not safe on disk
             return
         }
-        if (p.isDead || owner in awaitingRespawn || k.kit !in kits.kits) return
+        // Only inside the arena whose kit they wear, and never over items that became theirs after a failed restore.
+        if (!wearingKitHere(owner) || p.isDead || owner in awaitingRespawn || k.kit !in kits.kits) return
         kits.applyToPlayer(p, k.kit)
     }
 
     /**
      * Puts the stashed items back (inventory cleared first) and deletes the file. True when there was nothing to restore
      * or it worked; false when the stash could not be read (file kept, inventory untouched, player told, SEVERE
-     * logged) or the player is dead (the respawn restores it).
+     * logged) or the player is dead (the respawn restores it). After an earlier failure, what the player holds now
+     * (minus one copy of each fresh kit stack) is handed back on top of the stash, leftovers dropped at their feet.
      */
     fun restore(p: Player): Boolean {
         val id = p.uniqueId
@@ -111,11 +137,13 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
         try {
             p.closeInventory()
             val size = inv.contents.size
+            val held = if (id in restoreFailed) ownSince(inv.contents.toList(), kitted[id]?.kit) else emptyList()
             val contents = arrayOfNulls<ItemStack>(size)
             for (i in 0 until minOf(size, items.size)) contents[i] = items[i]
             inv.contents = contents
-            // Only if the inventory got smaller between versions: nothing is left out.
-            val extra = items.drop(size).filterNotNull()
+            // Items beyond the slots (captured drops, or a smaller inventory in a later version) and, after a failed
+            // restore, what the player gathered meanwhile: nothing is left out.
+            val extra = items.drop(size).filterNotNull() + held
             if (extra.isNotEmpty()) inv.addItem(*extra.toTypedArray()).values.forEach { p.world.dropItemNaturally(p.location, it) }
         } catch (e: VirtualMachineError) {
             throw e
@@ -124,6 +152,7 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
             return false
         }
         kitted.remove(id)
+        restoreFailed.remove(id)
         discard(id, file, p.name)
         p.sendMessage("PvpBots: your own items are back.")
         return true
@@ -179,9 +208,9 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
         awaitingRespawn.remove(id)
     }
 
-    /** PlayerDeathEvent: wearing a kit → no item drops, no XP orbs, XP kept. */
+    /** PlayerDeathEvent: wearing a kit in its arena: no item drops, no XP orbs, XP kept. */
     fun onDeath(event: PlayerDeathEvent) {
-        if (!inKitArena(event.player) || isBot(event.player.uniqueId)) return
+        if (isBot(event.player.uniqueId) || !inKitArena(event.player)) return
         event.drops.clear()
         event.keepLevel = true
         event.droppedExp = 0
@@ -195,16 +224,40 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
         if (hasStash(id)) awaitingRespawn += id
     }
 
-    /** PlayerRespawnEvent: restore on the next tick, once the respawn has finished; respawning inside a kit arena re-kits. */
+    /** PlayerRespawnEvent: [afterRespawn] on the next tick, once the respawn has finished. */
     fun onRespawn(p: Player) {
+        if (isBot(p.uniqueId)) return
+        Bukkit.getScheduler().runTask(plugin, Runnable { afterRespawn(p) })
+    }
+
+    /**
+     * The tick after a respawn: the stash comes back, judged by where the player is now (the region watcher's current
+     * area, not the arena they died in), so respawning outside restores and respawning inside a kit arena re-kits.
+     */
+    fun afterRespawn(p: Player) {
         val id = p.uniqueId
-        if (isBot(id)) return
-        Bukkit.getScheduler().runTask(plugin, Runnable {
-            if (!p.isOnline || p.isDead) return@Runnable // quit or join handle it
-            awaitingRespawn.remove(id)
-            val area = areas[id]
-            apply(p, area, area)
-        })
+        if (isBot(id) || !p.isValid || p.isDead) return // quit or join handle it
+        awaitingRespawn.remove(id)
+        val area = plugin.regionWatcher.areaOf(id)
+        if (area == null) areas.remove(id) else areas[id] = area
+        apply(p, area, area)
+    }
+
+    /** PlayerDropItemEvent (HIGHEST): blocked while wearing a kit; drops from the inventory close in [stashAndGive] pass. */
+    fun onDrop(event: PlayerDropItemEvent) {
+        if (capturing == event.player.uniqueId) return
+        if (inKitArena(event.player)) event.isCancelled = true
+    }
+
+    /** PlayerDropItemEvent (MONITOR): a drop that went through while [stashAndGive] closes the inventory joins the stash. */
+    fun onDropDone(event: PlayerDropItemEvent) {
+        if (capturing == event.player.uniqueId && !event.isCancelled) captured += event.itemDrop
+    }
+
+    /** EntityPickupItemEvent: no picking up while wearing a kit (refill and restore replace the whole inventory). */
+    fun onPickup(event: EntityPickupItemEvent) {
+        val p = event.entity as? Player ?: return
+        if (inKitArena(p)) event.isCancelled = true
     }
 
     /** Self-test: drop every in-memory note about [id] (the file is the caller's business). */
@@ -213,6 +266,7 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
         areas.remove(id)
         awaitingRespawn.remove(id)
         spent.remove(id)
+        restoreFailed.remove(id)
     }
 
     private fun stashAndGive(p: Player, area: AreaRef): Boolean {
@@ -224,11 +278,21 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
         }
         val file = stashFile(id)
         if (file.exists() || id in spent) return false // never overwrite a stash
-        // Cursor and crafting-grid items go back into the inventory, so they are saved too.
-        p.closeInventory()
+        // Cursor and crafting-grid items go back into the inventory; what vanilla drops because it is full is captured
+        // and saved after the slots (restore hands those back with addItem).
+        captured.clear()
+        capturing = id
         try {
-            val bytes = StashCodec.encode(p.inventory.contents.map { it?.takeUnless { s -> s.type.isAir }?.serializeAsBytes() })
-            writeNew(file, bytes)
+            p.closeInventory()
+        } finally {
+            capturing = null
+        }
+        val drops = captured.filter { it.isValid }
+        captured.clear()
+        try {
+            val slots = p.inventory.contents.map { it?.takeUnless { s -> s.type.isAir }?.serializeAsBytes() } +
+                drops.map { it.itemStack.serializeAsBytes() }
+            writeNew(file, StashCodec.encode(slots))
         } catch (e: VirtualMachineError) {
             throw e
         } catch (e: Exception) {
@@ -236,6 +300,7 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
             p.sendMessage("PvpBots: your items could not be saved, so you keep them and fight in your own gear here.")
             return false
         }
+        drops.forEach { it.remove() } // now in the stash
         kits.applyToPlayer(p, kitName)
         kitted[id] = Kitted(p, area.arena, kitName)
         p.sendMessage("PvpBots: your items are saved; here you fight with the $kitName kit. You get them back when you leave.")
@@ -289,7 +354,18 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
         }
     }
 
+    /** Non-empty items of [contents] minus one copy of each fresh stack of [kitName] (the plugin made those). */
+    private fun ownSince(contents: List<ItemStack?>, kitName: String?): List<ItemStack> {
+        val own = contents.filterNotNull().filter { !it.type.isAir }.map { it.clone() }.toMutableList()
+        for (t in kitName?.let { kits.templates(it) }.orEmpty()) {
+            val i = own.indexOfFirst { it.isSimilar(t) && it.amount <= t.amount }
+            if (i >= 0) own.removeAt(i)
+        }
+        return own
+    }
+
     private fun failed(p: Player, file: File, e: Throwable) {
+        restoreFailed += p.uniqueId
         plugin.logger.log(Level.SEVERE, "Inventory stash of ${p.name} (${p.uniqueId}) could not be restored; the file is kept: ${file.absolutePath}", e)
         p.sendMessage("Your items could not be restored automatically; an admin has been notified.")
     }

@@ -3,6 +3,7 @@ package pvpbots.bukkit
 import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
 import org.bukkit.event.Listener
+import org.bukkit.event.entity.EntityPickupItemEvent
 import org.bukkit.event.entity.PlayerDeathEvent
 import org.bukkit.event.player.PlayerDropItemEvent
 import org.bukkit.event.player.PlayerJoinEvent
@@ -25,11 +26,16 @@ class KitArenaListener(private val plugin: PvpBotsPlugin) : Listener {
     @EventHandler(priority = EventPriority.MONITOR)
     fun onRespawn(event: PlayerRespawnEvent) = kits.onRespawn(event.player)
 
-    /** No smuggling kit items out: dropping is blocked while wearing an arena kit. */
+    /** No smuggling kit items out: dropping is blocked while wearing an arena kit in its arena. */
     @EventHandler(priority = EventPriority.HIGHEST)
-    fun onDrop(event: PlayerDropItemEvent) {
-        if (kits.inKitArena(event.player)) event.isCancelled = true
-    }
+    fun onDrop(event: PlayerDropItemEvent) = kits.onDrop(event)
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    fun onDropDone(event: PlayerDropItemEvent) = kits.onDropDone(event)
+
+    /** No picking up while wearing an arena kit: the next refill or restore would replace those items. */
+    @EventHandler(priority = EventPriority.HIGHEST)
+    fun onPickup(event: EntityPickupItemEvent) = kits.onPickup(event)
 
     /** A death while wearing an arena kit drops nothing; the player keeps their XP (the stash comes back on respawn). */
     @EventHandler(priority = EventPriority.HIGHEST)
