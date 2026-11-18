@@ -12,6 +12,7 @@ import org.bukkit.block.data.type.Leaves
 import org.bukkit.block.data.type.Slab
 import pvpbots.arena.ArenaLayout
 import pvpbots.arena.ArenaRecord
+import pvpbots.arena.BlockSnapshot
 import pvpbots.arena.Facing
 import pvpbots.arena.Layout
 import pvpbots.arena.Part
@@ -34,7 +35,64 @@ internal class ArenaSelfTest(private val t: SelfTest, private val plugin: PvpBot
         refusesChest()
         buildAndRemove()
         padSpawn()
+        resumedRemovalDropsRegion()
+        orphanSnapshotKept()
     }
+
+    /** A5: a REMOVING record whose region survived (unsaved delete, then crash) → resume restores and deletes the region. */
+    private suspend fun SequenceScope<Int>.resumedRemovalDropsRegion() {
+        val name = "selftest_a5"
+        val origin = floorAt(800, 0)
+        val layout = ArenaLayout.generate(Preset.DUEL, origin, Facing.SOUTH)
+        val before = read(layout)
+        service.createAt(world, origin, Facing.SOUTH, name, Preset.DUEL, null, null)
+        val ready = waitUntil(200) { registry.get(name)?.status == ArenaRecord.Status.READY }
+        val rec = registry.get(name)
+        // Simulate the state after a crash: record REMOVING, region still there, no job running.
+        rec?.let { registry.put(it.copy(status = ArenaRecord.Status.REMOVING)) }
+        val regionBefore = regions()?.hasRegion("pvpbots_$name") == true
+        service.resumeAll()
+        val busy = service.busy(name)
+        val gone = waitUntil(200) { registry.get(name) == null }
+        val regionAfter = regions()?.hasRegion("pvpbots_$name") == true
+        val notRestored = before.count { (p, d) -> block(p).blockData.asString != d }
+        t.check(
+            "A5 resumed removal drops region",
+            ready >= 0 && regionBefore && busy && gone >= 0 && !regionAfter && notRestored == 0 && !service.snapshotFile(name).exists(),
+            "READY after $ready ticks; record set REMOVING with region present=$regionBefore; resumeAll started a job: $busy; " +
+                "record gone after $gone ticks; region left: $regionAfter; positions not restored $notRestored/${before.size}; " +
+                "snapshot left: ${service.snapshotFile(name).exists()}",
+        )
+        if (gone < 0) service.forget(name)
+    }
+
+    /** A6: a snapshot with no record (registry lost) is moved aside byte-for-byte, never overwritten. */
+    private suspend fun SequenceScope<Int>.orphanSnapshotKept() {
+        val name = "selftest_a6"
+        val origin = floorAt(900, 0)
+        val file = service.snapshotFile(name)
+        val orphanBytes = BlockSnapshot.encode(listOf(BlockPos(origin.x, origin.y, origin.z) to "minecraft:gold_block"))
+        ArenaRegistry.writeDurably(file, orphanBytes)
+        val dir = file.parentFile
+        val asideBefore = dir.listFiles { f -> f.name.startsWith("$name.snapshot.orphan-") }?.toSet().orEmpty()
+        val msgs = service.createAt(world, origin, Facing.NORTH, name, Preset.DUEL, null, null)
+        val aside = dir.listFiles { f -> f.name.startsWith("$name.snapshot.orphan-") }?.toSet().orEmpty() - asideBefore
+        val kept = aside.singleOrNull()?.readBytes()?.contentEquals(orphanBytes) == true
+        val told = msgs.any { m -> aside.any { m.contains(it.name) } }
+        val newSnapshot = file.exists() && !file.readBytes().contentEquals(orphanBytes)
+        val ready = waitUntil(200) { registry.get(name)?.status == ArenaRecord.Status.READY }
+        t.check(
+            "A6 orphan snapshot kept",
+            kept && told && newSnapshot && ready >= 0,
+            "moved aside: ${aside.map { it.name }}; bytes identical to the orphan: $kept; admin told: $told; " +
+                "new snapshot written: $newSnapshot; READY after $ready ticks; reply: ${msgs.joinToString(" | ")}",
+        )
+        service.remove(name)
+        waitUntil(200) { registry.get(name) == null }
+        aside.forEach { it.delete() }
+    }
+
+    private fun regions() = WorldGuard.getInstance().platform.regionContainer.get(BukkitAdapter.adapt(world))
 
     /** A4: a chest inside the footprint refuses the build; nothing changes. */
     private suspend fun SequenceScope<Int>.refusesChest() {

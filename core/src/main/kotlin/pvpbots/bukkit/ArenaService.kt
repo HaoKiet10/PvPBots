@@ -28,6 +28,7 @@ import pvpbots.math.BlockPos
 import pvpbots.math.Bounds
 import pvpbots.session.Role
 import java.io.File
+import java.nio.file.Files
 import java.util.UUID
 import java.util.logging.Level
 import kotlin.math.ceil
@@ -93,6 +94,21 @@ class ArenaService(private val plugin: PvpBotsPlugin, val registry: ArenaRegistr
         val (refusals, warnings) = evaluate(world, name, kit, layout)
         if (refusals.isNotEmpty()) return refusals.map { "Cannot build: $it" }
 
+        // A snapshot without a record may be the only copy of some terrain (registry lost or entry skipped): keep it aside.
+        val notes = ArrayList<String>()
+        val old = snapshotFile(name)
+        if (old.exists()) {
+            val aside = File(dir, "$name.snapshot.orphan-${System.currentTimeMillis()}")
+            try {
+                Files.move(old.toPath(), aside.toPath())
+            } catch (e: Exception) {
+                plugin.logger.log(Level.SEVERE, "Arena $name: existing snapshot ${old.name} could not be moved aside; nothing was changed", e)
+                return listOf("Cannot build: an old snapshot ${old.name} exists and could not be moved aside (${e.message}); nothing was changed.")
+            }
+            plugin.logger.warning("Arena $name: found a snapshot with no arena record; moved it to ${aside.path} (it may hold original terrain)")
+            notes += "Note: an old snapshot with no arena record was kept as ${aside.name} in ${dir.path}; it may hold original terrain."
+        }
+
         val writer = BukkitBlockWriter(world)
         val original = layout.blocks.keys.map { it to writer.read(it) }
         try {
@@ -115,7 +131,7 @@ class ArenaService(private val plugin: PvpBotsPlugin, val registry: ArenaRegistr
         }
         start(record, layout, admin)
         plugin.logger.info("Arena $name: building ${layout.blocks.size} blocks in ${world.name} at ${pos(origin)} facing $facing")
-        return warnings.map { "Warning: $it" } +
+        return notes + warnings.map { "Warning: $it" } +
             "Building arena '$name' (${layout.blocks.size} blocks, about ${eta(layout.blocks.size)}); it opens for fights once finished."
     }
 
@@ -234,6 +250,15 @@ class ArenaService(private val plugin: PvpBotsPlugin, val registry: ArenaRegistr
                 )
                 continue
             }
+            if (r.status == Status.REMOVING) {
+                // The region delete may not have been saved before the crash: delete it again before restoring.
+                try {
+                    deleteRegion(world, r)
+                } catch (e: Exception) {
+                    plugin.logger.log(Level.WARNING, "Arena ${r.name}: region ${r.regionId} could not be deleted now; retried when the removal finishes", e)
+                }
+                plugin.regionWatcher.refreshAll()
+            }
             val layout = layoutOf(r)
             plugin.logger.info("Arena ${r.name}: resuming ${if (r.status == Status.BUILDING) "build" else "removal"} in ${world.name}")
             if (r.status == Status.BUILDING) start(r, layout, null) else start(r, original, null)
@@ -306,7 +331,9 @@ class ArenaService(private val plugin: PvpBotsPlugin, val registry: ArenaRegistr
                 plugin.logger.info("Arena ${r.name}: built and open")
                 run.admin?.let { Bukkit.getPlayer(it) }?.sendMessage("PvpBots: arena '${r.name}' is built and open.")
             } else {
-                // Record first: a crash after this leaves only a harmless orphan snapshot file, never a record without one.
+                // Region gone (and saved) before the record: an orphan region would turn into a plain v1 trainer area.
+                deleteRegion(world ?: error("world ${r.world} is not loaded"), r)
+                // Record before snapshot: a crash after this leaves only an orphan snapshot file, never a record without one.
                 registry.delete(r.name)
                 snapshotFile(r.name).delete()
                 plugin.logger.info("Arena ${r.name}: removed, original blocks restored")
@@ -331,6 +358,13 @@ class ArenaService(private val plugin: PvpBotsPlugin, val registry: ArenaRegistr
         region.setFlag(Flags.PVP, StateFlag.State.ALLOW)
         wg.addRegion(region)
         saveRegions(wg, r.name)
+    }
+
+    /** Deletes the arena's region if present and saves; throws when the change cannot be saved. */
+    private fun deleteRegion(world: World, r: ArenaRecord) {
+        val wg = regionManager(world) ?: return
+        if (wg.hasRegion(r.regionId)) wg.removeRegion(r.regionId)
+        wg.saveChanges()
     }
 
     private fun saveRegions(wg: RegionManager, name: String) {
