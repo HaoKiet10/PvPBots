@@ -8,6 +8,7 @@ import pvpbots.adapter.BotAdapter
 import pvpbots.arena.ArenaRecord
 import pvpbots.session.AreaDirector
 import pvpbots.session.AreaRef
+import pvpbots.session.SessionKey
 import pvpbots.slots.BotSlots
 import java.io.File
 import java.util.UUID
@@ -25,6 +26,8 @@ class PvpBotsPlugin : JavaPlugin() {
         private set
     lateinit var arenaService: ArenaService
         private set
+    lateinit var kitArenas: KitArenaService
+        private set
 
     private var flagsRegistered = false
     private var running = false
@@ -33,8 +36,15 @@ class PvpBotsPlugin : JavaPlugin() {
 
     override fun onLoad() {
         regionWatcher = RegionWatcher(this, object : RegionWatcher.Events {
-            override fun onAreaChange(player: UUID, from: AreaRef?, to: AreaRef?) =
+            override fun onAreaChange(player: UUID, from: AreaRef?, to: AreaRef?) {
+                // Kit first: the player wears the arena kit before their trainer can spawn.
+                Bukkit.getPlayer(player)?.let { p ->
+                    TickIsolation.guard({ kitArenas.onAreaChange(p, from, to) }) { e ->
+                        logger.log(Level.SEVERE, "Kit arena handling failed for ${p.name} (${from?.regionId} -> ${to?.regionId})", e)
+                    }
+                }
                 director.onAreaChange(player, from, to, botManager.nowMs())
+            }
 
             override fun maxBots(): Int = botManager.config.settings.maxBots
 
@@ -73,10 +83,20 @@ class PvpBotsPlugin : JavaPlugin() {
         registry.warnings.forEach { logger.severe("arenas: $it") }
         arenaService = ArenaService(this, registry, File(dataFolder, "arenas"))
         botManager.arenaPads = { name -> arenaService.registry.get(name)?.padsB }
+        kitArenas = KitArenaService(this, File(dataFolder, "stash"))
+        arenaService.onArenaRelease = { name -> kitArenas.releaseArena(name) }
+        // Each new round in a kit arena: the owner gets a fresh kit when their trainer spawns.
+        botManager.spawnListeners += { r ->
+            val key = r.key
+            if (r.area.kit != null && key is SessionKey.Trainer) kitArenas.refill(key.owner)
+        }
+        // Stashes left by a crash or a disabled plugin come back before anything else happens.
+        kitArenas.restoreAllOnline()
         arenaService.resumeAll()
 
         server.pluginManager.registerEvents(DamageListener(botManager), this)
         server.pluginManager.registerEvents(BotLifecycleListener(this), this)
+        server.pluginManager.registerEvents(KitArenaListener(this), this)
         regionWatcher.start()
         getCommand("pvpbots")?.let { cmd ->
             val admin = AdminCommand(this)
@@ -95,6 +115,10 @@ class PvpBotsPlugin : JavaPlugin() {
     }
 
     override fun onDisable() {
+        // Kit-arena players get their own items back before anything else shuts down (§5.6).
+        if (this::kitArenas.isInitialized) {
+            TickIsolation.guard({ kitArenas.restoreAllOnline() }) { e -> logger.log(Level.SEVERE, "Restoring kit-arena inventories failed", e) }
+        }
         selfTest?.abort()
         selfTest = null
         if (!running) return

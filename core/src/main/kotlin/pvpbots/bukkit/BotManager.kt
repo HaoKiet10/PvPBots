@@ -60,6 +60,9 @@ class BotManager(
     /** Test hook: told about every bot right after it is registered. */
     var spawnObserver: ((BotRecord) -> Unit)? = null
 
+    /** Plugin hooks told about every bot right after it is registered (after [spawnObserver]); failures are logged only. */
+    val spawnListeners = ArrayList<(BotRecord) -> Unit>()
+
     private val bots = LinkedHashMap<UUID, BotRecord>()
     private val rng = Random.Default
     private val tickNanos = LongArray(100)
@@ -120,7 +123,9 @@ class BotManager(
             val ne = (near as? org.bukkit.entity.LivingEntity)?.eyeLocation ?: nl
             val facing = Aim.lookAt(eye, Vec3(ne.x, ne.y, ne.z))
             val at = Location(world, point.x + 0.5, point.y.toDouble(), point.z + 0.5, facing.yaw, facing.pitch)
-            val profile = config.profiles.getValue(difficulty ?: Difficulty.MEDIUM) // adaptive spawning arrives with the skill integration
+            val base = config.profiles.getValue(difficulty ?: Difficulty.MEDIUM) // adaptive spawning arrives with the skill integration
+            // In a kit arena (§5.6) the bot fights in the arena's kit whatever its difficulty.
+            val profile = area.kit?.let { base.copy(kit = it) } ?: base
             val skin = config.skins.pick(rng)
             val id = UUID.randomUUID()
             val handle = BotProfiler.spawnPart(BotProfiler.SpawnPart.ADAPTER) { adapter.spawn(BotSpec(nameFor(role, id), id, skin?.value, skin?.signature), at) }
@@ -131,6 +136,7 @@ class BotManager(
                 val record = BotRecord(handle, key, role, profile, area, controller)
                 bots[handle.id] = record
                 spawnObserver?.invoke(record)
+                for (l in spawnListeners) TickIsolation.guard({ l(record) }) { e -> logFailure(e, "Spawn listener failed for bot ${handle.id}", Level.SEVERE) }
                 return handle.id
             } catch (e: VirtualMachineError) {
                 throw e

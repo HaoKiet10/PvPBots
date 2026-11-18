@@ -43,7 +43,7 @@ import kotlin.math.floor
  * Returned strings are messages for the admin.
  */
 class ArenaService(private val plugin: PvpBotsPlugin, val registry: ArenaRegistry, private val dir: File) {
-    /** Called with the arena name before an arena's blocks or kit change (Task 6: restore kit-arena inventories). */
+    /** Called with the arena name before an arena's blocks or kit change: restores kit-arena inventories (§5.6). */
     var onArenaRelease: (String) -> Unit = {}
 
     private class Running(val record: ArenaRecord, val job: ArenaJob, val writer: BukkitBlockWriter, val chunks: List<Chunk>, val admin: UUID?)
@@ -67,6 +67,10 @@ class ArenaService(private val plugin: PvpBotsPlugin, val registry: ArenaRegistr
         return (Material.matchMaterial(name) ?: Material.STONE).createBlockData().asString
     }
 
+    /** The config's own `kits:` key matching [kit] ignoring case (commands lowercase what they read), else [kit] unchanged. */
+    fun kitKey(kit: String?): String? =
+        kit?.let { k -> plugin.botManager.config.kits.kits.keys.firstOrNull { it.equals(k, ignoreCase = true) } ?: k }
+
     fun layoutOf(r: ArenaRecord): Layout = ArenaLayout.generate(r.preset, r.origin, r.facing)
 
     // ---- create ----
@@ -78,7 +82,8 @@ class ArenaService(private val plugin: PvpBotsPlugin, val registry: ArenaRegistr
         createAt(p.world, originOf(p), Facing.fromYaw(p.location.yaw), name, preset, kit, p.uniqueId)
 
     /** What [createAt] would build here, its warnings, and why it would be refused (if it would). */
-    internal fun previewAt(world: World, origin: BlockPos, facing: Facing, name: String, preset: Preset, kit: String?): List<String> {
+    internal fun previewAt(world: World, origin: BlockPos, facing: Facing, name: String, preset: Preset, kitName: String?): List<String> {
+        val kit = kitKey(kitName)
         val layout = ArenaLayout.generate(preset, origin, facing)
         val (refusals, warnings) = evaluate(world, name, kit, layout)
         val lines = ArrayList<String>()
@@ -89,7 +94,8 @@ class ArenaService(private val plugin: PvpBotsPlugin, val registry: ArenaRegistr
     }
 
     /** Checks, then snapshot, record and job. Refused (nothing changed) when any check fails or the snapshot cannot be written. */
-    internal fun createAt(world: World, origin: BlockPos, facing: Facing, name: String, preset: Preset, kit: String?, admin: UUID?): List<String> {
+    internal fun createAt(world: World, origin: BlockPos, facing: Facing, name: String, preset: Preset, kitName: String?, admin: UUID?): List<String> {
+        val kit = kitKey(kitName)
         val layout = ArenaLayout.generate(preset, origin, facing)
         val (refusals, warnings) = evaluate(world, name, kit, layout)
         if (refusals.isNotEmpty()) return refusals.map { "Cannot build: $it" }
@@ -201,7 +207,8 @@ class ArenaService(private val plugin: PvpBotsPlugin, val registry: ArenaRegistr
         return listOf("Removing arena '$name': restoring ${original.size} original blocks (about ${eta(original.size)}).")
     }
 
-    fun setKit(name: String, kit: String?): List<String> {
+    fun setKit(name: String, kitName: String?): List<String> {
+        val kit = kitKey(kitName)
         val r = registry.get(name) ?: return listOf("No arena named '$name'.")
         if (r.status == Status.REMOVING) return listOf("Arena '$name' is being removed.")
         if (kit != null && kit !in plugin.botManager.config.kits.kits) {

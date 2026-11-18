@@ -4,6 +4,7 @@ import org.bukkit.Material
 import org.bukkit.attribute.Attribute
 import org.bukkit.entity.Player
 import org.bukkit.inventory.ItemStack
+import org.bukkit.inventory.PlayerInventory
 import pvpbots.combat.KitSlots
 import pvpbots.profile.DifficultyProfile
 
@@ -27,20 +28,7 @@ class KitApplier(val kits: Map<String, Kit>) {
     /** Clears the bot and gives it the kit, full health/food and no effects. Unknown kit: empty inventory. */
     fun apply(p: Player, kitName: String, profile: DifficultyProfile) {
         val inv = p.inventory
-        inv.clear()
-        inv.armorContents = arrayOfNulls(4)
-        inv.setItemInOffHand(null)
-        val kit = kits[kitName]
-        if (kit != null) {
-            // Bukkit armorContents order is boots, leggings, chestplate, helmet.
-            inv.armorContents = kit.armor.reversed().map { m -> m?.let { ItemStack(it) } }.toTypedArray()
-            kit.sword?.let { inv.setItem(KitSlots.SWORD, ItemStack(it)) }
-            kit.axe?.let { inv.setItem(KitSlots.AXE, ItemStack(it)) }
-            kit.food?.let { inv.setItem(KitSlots.FOOD, ItemStack(it, kit.foodAmount.coerceIn(1, it.maxStackSize))) }
-            kit.bow?.let { inv.setItem(KitSlots.BOW, ItemStack(it)) }
-            if (kit.arrows > 0) inv.setItem(KitSlots.ARROWS, ItemStack(Material.ARROW, kit.arrows.coerceAtMost(64)))
-            if (kit.shield) inv.setItemInOffHand(ItemStack(Material.SHIELD))
-        }
+        fill(inv, kitName)
         if (profile.totem) inv.setItem(KitSlots.TOTEM, ItemStack(Material.TOTEM_OF_UNDYING))
         inv.heldItemSlot = KitSlots.SWORD
         p.activePotionEffects.forEach { p.removePotionEffect(it.type) }
@@ -49,6 +37,35 @@ class KitApplier(val kits: Map<String, Kit>) {
         p.saturation = 5f
         p.fireTicks = 0
         p.fallDistance = 0f
+    }
+
+    /**
+     * A real player in a kit arena (§5.6): the same kit items as a bot gets (no totem), full health, food 20 and
+     * saturation 5. Potion effects and XP are not touched. The caller must have stashed the inventory first.
+     */
+    fun applyToPlayer(p: Player, kitName: String) {
+        val inv = p.inventory
+        fill(inv, kitName)
+        inv.heldItemSlot = KitSlots.SWORD
+        p.health = p.getAttribute(Attribute.MAX_HEALTH)?.value ?: 20.0
+        p.foodLevel = 20
+        p.saturation = 5f
+    }
+
+    /** Clears [inv] (main, armor, off-hand) and puts the kit in: armor, hotbar per [KitSlots], shield off-hand. Unknown kit: empty. */
+    fun fill(inv: PlayerInventory, kitName: String) {
+        inv.clear()
+        inv.armorContents = arrayOfNulls(4)
+        inv.setItemInOffHand(null)
+        val kit = kits[kitName] ?: return
+        // Bukkit armorContents order is boots, leggings, chestplate, helmet.
+        inv.armorContents = kit.armor.reversed().map { m -> m?.let { ItemStack(it) } }.toTypedArray()
+        kit.sword?.let { inv.setItem(KitSlots.SWORD, ItemStack(it)) }
+        kit.axe?.let { inv.setItem(KitSlots.AXE, ItemStack(it)) }
+        kit.food?.let { inv.setItem(KitSlots.FOOD, ItemStack(it, kit.foodAmount.coerceIn(1, it.maxStackSize))) }
+        kit.bow?.let { inv.setItem(KitSlots.BOW, ItemStack(it)) }
+        if (kit.arrows > 0) inv.setItem(KitSlots.ARROWS, ItemStack(Material.ARROW, kit.arrows.coerceAtMost(64)))
+        if (kit.shield) inv.setItemInOffHand(ItemStack(Material.SHIELD))
     }
 
     companion object {

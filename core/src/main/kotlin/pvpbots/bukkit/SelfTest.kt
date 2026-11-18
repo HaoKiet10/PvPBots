@@ -35,7 +35,7 @@ import java.time.Instant
 import java.util.UUID
 
 /**
- * Scripted in-server checks (T1-T6 trainer, A1-A2 ally, A3-A4 + T7 arenas in [ArenaSelfTest]; D1 is checked by the Gradle `selfTest` task after the
+ * Scripted in-server checks (T1-T6 trainer, A1-A2 ally, A3-A6 + T7 arenas in [ArenaSelfTest], K1-K2 kit arenas in [KitSelfTest]; D1 is checked by the Gradle `selfTest` task after the
  * server exits). Runs in the flat world [WORLD] with dummy owners: fake players spawned through the adapter but NOT
  * registered as bots (so the director and the damage policy treat them as real players). Areas are hand-built
  * [AreaRef]s passed to `director.onAreaChange` directly. The script is a sequence that yields "wait N ticks".
@@ -131,7 +131,12 @@ class SelfTest(
         world = setupWorld()
         yield(2)
         when (mode) {
-            Mode.All -> { trainerChecks(); allyChecks(); with(ArenaSelfTest(this@SelfTest, plugin, world)) { run() } }
+            Mode.All -> {
+                trainerChecks()
+                allyChecks()
+                with(ArenaSelfTest(this@SelfTest, plugin, world)) { run() }
+                with(KitSelfTest(this@SelfTest, plugin, world)) { run() }
+            }
             Mode.Trainer -> trainerChecks()
             Mode.Ally -> allyChecks()
             is Mode.Load -> loadCheck(mode.bots)
@@ -584,7 +589,12 @@ class SelfTest(
         manager.spawnObserver = null
         zombies.forEach { runCatching { it.remove() } }
         zombies.clear()
-        for (h in dummies.toList()) runCatching { manager.adapter.remove(h) }
+        for (h in dummies.toList()) {
+            // A check that stopped half-way may leave a dummy wearing an arena kit: give its test items back, drop the file.
+            runCatching { plugin.kitArenas.restore(h.bukkit) }
+            runCatching { plugin.kitArenas.forget(h.id); plugin.kitArenas.stashFile(h.id).delete() }
+            runCatching { manager.adapter.remove(h) }
+        }
         dummies.clear()
         if (restoreDirector) runCatching { plugin.newDirector(null) }
         if (mayShutdown) unloadWorlds()
