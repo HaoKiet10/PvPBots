@@ -27,6 +27,22 @@ object ArenaLayout {
     private fun mirror(c: Pair<Int, Int>) =
         listOf(c.first to c.second, -c.first to c.second, c.first to -c.second, -c.first to -c.second)
 
+    /**
+     * A column just outside the footprint in front of the entrance (two blocks beyond the outer ring, on the entrance's
+     * centre line), at floor height [origin].y: where players are put before the arena is removed.
+     */
+    fun outsideEntrance(preset: Preset, origin: BlockPos, facing: Facing): BlockPos {
+        val ring = preset.inside / 2 + 1
+        return rotate(0, 0, -(ring + 2), origin, facing)
+    }
+
+    private fun rotate(lx: Int, dy: Int, lz: Int, origin: BlockPos, facing: Facing): BlockPos {
+        var x = lx
+        var z = -lz // NORTH: away from the admin is -z
+        repeat(facing.ordinal) { val nx = -z; z = x; x = nx } // 90 degrees clockwise seen from above
+        return BlockPos(origin.x + x, origin.y + dy, origin.z + z)
+    }
+
     fun generate(preset: Preset, origin: BlockPos, facing: Facing): Layout {
         val h = preset.inside / 2
         val ring = h + 1
@@ -62,12 +78,7 @@ object ArenaLayout {
         val lightAxis = (-(h / LIGHT_SPACING)..h / LIGHT_SPACING).map { it * LIGHT_SPACING }
         for (lx in lightAxis) for (lz in lightAxis) local[Triple(lx, 0, lz)] = Part.LIGHT
 
-        fun pos(lx: Int, dy: Int, lz: Int): BlockPos {
-            var x = lx
-            var z = -lz // NORTH: away from the admin is -z
-            repeat(facing.ordinal) { val nx = -z; z = x; x = nx } // 90 degrees clockwise seen from above
-            return BlockPos(origin.x + x, origin.y + dy, origin.z + z)
-        }
+        fun pos(lx: Int, dy: Int, lz: Int): BlockPos = rotate(lx, dy, lz, origin, facing)
 
         val blocks = LinkedHashMap<BlockPos, Part>()
         for ((k, part) in local) blocks[pos(k.first, k.second, k.third)] = part

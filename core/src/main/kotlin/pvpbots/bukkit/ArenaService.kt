@@ -147,6 +147,7 @@ class ArenaService(private val plugin: PvpBotsPlugin, val registry: ArenaRegistr
         val warnings = ArrayList<String>()
         if (!NAME.matches(name)) refusals += "the name must be 1-32 characters a-z, 0-9, '_' or '-'."
         if (registry.get(name) != null) refusals += "an arena named '$name' already exists."
+        if (name in registry.skippedNames()) refusals += "arenas.yml has an unreadable entry named '$name'; fix or remove it by hand first."
         if (kit != null && kit !in plugin.botManager.config.kits.kits) {
             refusals += "no kit named '$kit' (kits: ${plugin.botManager.config.kits.kits.keys.joinToString(", ")})."
         }
@@ -193,7 +194,10 @@ class ArenaService(private val plugin: PvpBotsPlugin, val registry: ArenaRegistr
             registry.put(r.copy(status = Status.REMOVING))
         } catch (e: Exception) {
             plugin.logger.log(Level.SEVERE, "Arena $name: arenas.yml could not be written", e)
-            return listOf("Cannot remove: arenas.yml could not be written (${e.message}); nothing was changed.")
+            return listOf(
+                "Cannot remove: arenas.yml could not be written (${e.message}). Kit-arena inventories in '$name' were given back, " +
+                    "but the arena was not removed and its blocks are unchanged.",
+            )
         }
         // The record is REMOVING, so the region no longer resolves to an area: the refresh ends every session in it.
         regionManager(world)?.let { wg ->
@@ -202,6 +206,7 @@ class ArenaService(private val plugin: PvpBotsPlugin, val registry: ArenaRegistr
         }
         plugin.regionWatcher.refreshAll()
         failed.remove(name)
+        evacuate(world, r)
         start(r.copy(status = Status.REMOVING), original, null)
         plugin.logger.info("Arena $name: removing (restoring ${original.size} blocks)")
         return listOf("Removing arena '$name': restoring ${original.size} original blocks (about ${eta(original.size)}).")
@@ -265,6 +270,7 @@ class ArenaService(private val plugin: PvpBotsPlugin, val registry: ArenaRegistr
                     plugin.logger.log(Level.WARNING, "Arena ${r.name}: region ${r.regionId} could not be deleted now; retried when the removal finishes", e)
                 }
                 plugin.regionWatcher.refreshAll()
+                evacuate(world, r)
             }
             val layout = layoutOf(r)
             plugin.logger.info("Arena ${r.name}: resuming ${if (r.status == Status.BUILDING) "build" else "removal"} in ${world.name}")
@@ -338,8 +344,13 @@ class ArenaService(private val plugin: PvpBotsPlugin, val registry: ArenaRegistr
                 plugin.logger.info("Arena ${r.name}: built and open")
                 run.admin?.let { Bukkit.getPlayer(it) }?.sendMessage("PvpBots: arena '${r.name}' is built and open.")
             } else {
+                val w = world ?: error("world ${r.world} is not loaded")
+                // The restored blocks reach disk (flushed) before anything that could restore them again is deleted: a
+                // crash before the next autosave would otherwise lose the original terrain. If this throws, the record
+                // stays REMOVING and the job is redone after a restart.
+                w.save(true)
                 // Region gone (and saved) before the record: an orphan region would turn into a plain v1 trainer area.
-                deleteRegion(world ?: error("world ${r.world} is not loaded"), r)
+                deleteRegion(w, r)
                 // Record before snapshot: a crash after this leaves only an orphan snapshot file, never a record without one.
                 registry.delete(r.name)
                 snapshotFile(r.name).delete()
@@ -379,6 +390,23 @@ class ArenaService(private val plugin: PvpBotsPlugin, val registry: ArenaRegistr
             wg.saveChanges()
         } catch (e: Exception) {
             plugin.logger.log(Level.WARNING, "Arena $name: WorldGuard regions could not be saved now (WorldGuard retries on its own)", e)
+        }
+    }
+
+    /**
+     * Real players (not bots) in the footprint of [r] are put just outside it in front of the entrance, on the highest
+     * block there: the restore then cannot bury them.
+     */
+    private fun evacuate(world: World, r: ArenaRecord) {
+        val o = layoutOf(r).outer
+        val spot = ArenaLayout.outsideEntrance(r.preset, r.origin, r.facing)
+        for (p in world.players) {
+            if (plugin.botManager.isBot(p.uniqueId)) continue
+            val l = p.location
+            if (l.blockX !in o.min.x..o.max.x || l.blockZ !in o.min.z..o.max.z || l.blockY !in o.min.y - 1..o.max.y + 1) continue
+            val y = world.getHighestBlockYAt(spot.x, spot.z) + 1
+            val ok = p.teleport(Location(world, spot.x + 0.5, y.toDouble(), spot.z + 0.5, l.yaw, l.pitch))
+            if (!ok) plugin.logger.warning("Arena ${r.name}: ${p.name} could not be moved out of the footprint before the removal")
         }
     }
 

@@ -24,7 +24,7 @@ import pvpbots.session.Role
 import pvpbots.session.SessionKey
 
 /**
- * Arena self-test checks (A3, A4, T7), run by [SelfTest] in [SelfTest.Mode.All] in the temporary flat world. They use
+ * Arena self-test checks (A3-A7, T7), run by [SelfTest] in [SelfTest.Mode.All] in the temporary flat world. They use
  * the plugin's real [ArenaService] with a fake admin position (no player needed).
  */
 internal class ArenaSelfTest(private val t: SelfTest, private val plugin: PvpBotsPlugin, private val world: World) {
@@ -37,6 +37,49 @@ internal class ArenaSelfTest(private val t: SelfTest, private val plugin: PvpBot
         padSpawn()
         resumedRemovalDropsRegion()
         orphanSnapshotKept()
+        skippedEntryKept()
+    }
+
+    /** A7: an unreadable arenas.yml entry is backed up once and written back verbatim by every later save. */
+    private fun skippedEntryKept() {
+        val dir = java.io.File(plugin.dataFolder, "selftest-registry-${System.nanoTime()}")
+        dir.mkdirs()
+        val file = java.io.File(dir, "arenas.yml")
+        val bad = "broken:\n  world: w\n  origin: 1,2\n  facing: SIDEWAYS\n  preset: DUEL\n  region: pvpbots_broken\n  status: READY\n  pads-a:\n  - 1,2,3\n"
+        val good = "good:\n  world: w\n  origin: 0,64,0\n  facing: NORTH\n  preset: DUEL\n  region: pvpbots_good\n  status: READY\n  kit: iron\n  pads-a: []\n  pads-b: []\n"
+        file.writeText(good + bad)
+        fun section(f: java.io.File): Map<String, Any?>? =
+            org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(f).getConfigurationSection("broken")?.getValues(true)
+                ?.mapValues { (_, v) -> if (v is org.bukkit.configuration.ConfigurationSection) "section" else v }
+        val rawBefore = section(file)
+        val reg = ArenaRegistry(file)
+        val backups = dir.listFiles { f -> f.name.startsWith("arenas.yml.broken-") }.orEmpty()
+        val backupOk = backups.size == 1 && backups[0].readText() == good + bad
+        val tracked = reg.all().map { it.name }
+        val warned = reg.warnings.any { w -> w.contains("broken") && backups.any { w.contains(it.name) } }
+        var putOk = true
+        try {
+            reg.put(reg.get("good")!!.copy(kit = "diamond"))
+            reg.delete("good")
+            reg.put(reg.all().firstOrNull() ?: pvpbots.arena.ArenaRecord(
+                name = "fresh", world = "w", origin = BlockPos(5, 64, 5), facing = Facing.EAST, preset = Preset.DUEL,
+                regionId = "pvpbots_fresh", status = ArenaRecord.Status.READY, kit = null, padsA = emptyList(), padsB = emptyList(),
+            ))
+        } catch (e: Exception) {
+            putOk = false
+        }
+        val rawAfter = section(file)
+        val kept = rawBefore != null && rawBefore == rawAfter
+        val reloaded = ArenaRegistry(file)
+        val stillSkipped = reloaded.skippedNames() == setOf("broken") && reloaded.all().map { it.name } == listOf("fresh")
+        t.check(
+            "A7 skipped arenas.yml entry kept",
+            tracked == listOf("good") && backupOk && warned && putOk && kept && stillSkipped,
+            "tracked at load $tracked; backup ${backups.map { it.name }} identical to the file: $backupOk; SEVERE warning names entry and backup: $warned; " +
+                "put/delete/put went through: $putOk; raw entry after the saves identical to before: $kept ($rawAfter); " +
+                "reloaded: skipped ${reloaded.skippedNames()}, tracked ${reloaded.all().map { it.name }}",
+        )
+        dir.deleteRecursively()
     }
 
     /** A5: a REMOVING record whose region survived (unsaved delete, then crash) → resume restores and deletes the region. */
@@ -150,16 +193,26 @@ internal class ArenaSelfTest(private val t: SelfTest, private val plugin: PvpBot
             "region ${region?.id}: priority ${region?.priority}, role ${region?.getFlag(RegionWatcher.ROLE)}, " +
             "build ${region?.getFlag(Flags.BUILD)}, pvp ${region?.getFlag(Flags.PVP)}, difficulty ${region?.getFlag(RegionWatcher.DIFFICULTY)}"
 
+        // A player standing inside when the arena is removed is moved out first, never buried in the restored terrain.
+        val inside = t.spawnDummy("Rm", origin.x + 1, origin.z + 1)
+        yield(2)
+        val wasInside = layout.outer.let { o -> inside.bukkit.location.let { it.blockX in o.min.x..o.max.x && it.blockZ in o.min.z..o.max.z } }
         val removed = service.remove(name)
         val goneAfter = waitUntil(400) { registry.get(name) == null }
+        val at = inside.bukkit.location
+        val outside = layout.outer.let { o -> at.blockX !in o.min.x..o.max.x || at.blockZ !in o.min.z..o.max.z }
+        val free = at.block.isPassable && at.block.getRelative(BlockFace.UP).isPassable
+        val evac = "player inside at remove: $wasInside, after removal at (${at.blockX}, ${at.blockY}, ${at.blockZ}): outside the footprint $outside, " +
+            "feet and head in passable blocks $free"
+        t.removeDummy(inside)
         val notRestored = before.filter { (p, d) -> block(p).blockData.asString != d }
         val snapshotLeft = service.snapshotFile(name).exists()
         val regionLeft = WorldGuard.getInstance().platform.regionContainer.get(BukkitAdapter.adapt(world))?.hasRegion("pvpbots_$name") == true
         t.check(
             "A3 arena build/remove",
             snapshotFirst && unchangedAtCreate == before.size && readyAfter >= 0 && wrong.isEmpty() && regionOk &&
-                goneAfter >= 0 && notRestored.isEmpty() && !snapshotLeft && !regionLeft && terrainKinds >= 6,
-            "$built; remove: ${removed.lastOrNull()}; record gone after $goneAfter ticks; positions differing from before the build " +
+                goneAfter >= 0 && notRestored.isEmpty() && !snapshotLeft && !regionLeft && terrainKinds >= 6 && wasInside && outside && free,
+            "$built; $evac; remove: ${removed.lastOrNull()}; record gone after $goneAfter ticks; positions differing from before the build " +
                 "${notRestored.size}${sample(notRestored, before)}; snapshot file left: $snapshotLeft; region left: $regionLeft; " +
                 "distinct block states in the original terrain: $terrainKinds",
         )

@@ -113,4 +113,19 @@ class ArenaLayoutTest {
         val l = gen(Preset.TEAM, Facing.WEST)
         assertTrue(l.blocks.keys.all { l.outer.contains(it) })
     }
+
+    @Test fun outsideEntrance_isOutsideTheFootprintInFrontOfTheGap() {
+        for (p in Preset.entries) for (f in Facing.entries) {
+            val l = gen(p, f)
+            val o = ArenaLayout.outsideEntrance(p, origin, f)
+            assertTrue(o.x !in l.outer.min.x..l.outer.max.x || o.z !in l.outer.min.z..l.outer.max.z, "$p $f: $o inside ${l.outer}")
+            // Two blocks beyond the entrance gap (wall-height AIR at the ring), on its centre line.
+            val gap = l.blocks.filter { it.value == Part.AIR && it.key.y == 65 }.keys
+                .filter { maxOf(abs(it.x - origin.x), abs(it.z - origin.z)) == p.inside / 2 + 1 }
+            assertEquals(3, gap.size, "$p $f")
+            val mid = gap.first { g -> gap.count { maxOf(abs(it.x - g.x), abs(it.z - g.z)) == 1 } == 2 }
+            assertEquals(2, abs(o.x - mid.x) + abs(o.z - mid.z), "$p $f: $o vs gap centre $mid")
+        }
+        assertEquals(BlockPos(0, 64, 11), ArenaLayout.outsideEntrance(Preset.DUEL, origin, Facing.NORTH))
+    }
 }
