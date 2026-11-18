@@ -280,6 +280,7 @@ internal class KitSelfTest(private val t: SelfTest, private val plugin: PvpBotsP
         }
         val d = diff(stashSlots, slots(p))
         val deleted = !file.exists()
+        yield(5) // the save may finish off the main thread
         val saved = playerDataFile(p.uniqueId)
         val savedOk = saved != null && saved.lastModified() >= before && stashAtSave == true
         t.check(
@@ -288,8 +289,7 @@ internal class KitSelfTest(private val t: SelfTest, private val plugin: PvpBotsP
             "stash file written: $written ($size slots); after join: ${d ?: "inventory equals the stash, every slot identical"}; stash deleted: $deleted; " +
                 "player data saved while the stash still existed ($stashAtSave): ${saved?.let { "${it.parentFile.name}/${it.name}, written ${System.currentTimeMillis() - it.lastModified()} ms ago" } ?: "no file"}",
         )
-        Bukkit.getWorlds().firstOrNull()?.worldFolder?.walkTopDown()?.maxDepth(4)
-            ?.filter { it.isFile && it.name.contains(p.uniqueId.toString()) }?.toList()?.forEach { it.delete() }
+        playerFiles(p.uniqueId).forEach { it.delete() }
 
         // Saved while kitted (a tagged kit item in it): untagged items that came in from outside are handed back.
         p.inventory.clear()
@@ -421,11 +421,17 @@ internal class KitSelfTest(private val t: SelfTest, private val plugin: PvpBotsP
         cleanupArena(name)
     }
 
-    /** The player-data file [Player.saveData] writes for [id] (searched under the main world's folder). */
-    private fun playerDataFile(id: java.util.UUID): java.io.File? {
-        val root = Bukkit.getWorlds().firstOrNull()?.worldFolder ?: return null
-        return root.walkTopDown().maxDepth(4).firstOrNull { it.isFile && it.name == "$id.dat" }
+    /** Files naming [id] under the server's world folders (1.21.11 world/playerdata, 26.x world/players/data). */
+    private fun playerFiles(id: java.util.UUID): List<java.io.File> {
+        val root = Bukkit.getWorldContainer()
+        val skip = setOf("plugins", "libraries", "cache", "versions", "logs", "config")
+        return root.walkTopDown().maxDepth(6)
+            .onEnter { d -> d == root || d.parentFile != root || d.name !in skip }
+            .filter { it.isFile && it.name.contains(id.toString()) }.toList()
     }
+
+    /** The player-data file [Player.saveData] writes for [id]. */
+    private fun playerDataFile(id: java.util.UUID): java.io.File? = playerFiles(id).firstOrNull { it.name == "$id.dat" }
 
     /**
      * K4: `/pvpbots arena kit` mid-session (I2) with own items put into the kitted inventory from outside (I1): the
