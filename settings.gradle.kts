@@ -11,4 +11,4 @@ plugins {
 
 rootProject.name = "pvp-bots"
 
-include("adapter-api", "core", "plugin", "adapter-v1_21_11", "adapter-v26_1", "adapter-v26_2")
+include("adapter-api", "core", "plugin", "adapter-v1_21_11", "adapter-v26_1", "adapter-v26_2", "adapter-v26_3")

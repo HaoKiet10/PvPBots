@@ -22,6 +22,7 @@ dependencies {
     runtimeOnly(project(":adapter-v1_21_11"))
     runtimeOnly(project(":adapter-v26_1"))
     runtimeOnly(project(":adapter-v26_2"))
+    runtimeOnly(project(":adapter-v26_3"))
 }
 
 tasks.shadowJar {
@@ -56,6 +57,8 @@ val mc1_21_11_java21 = DevServer("1.21.11", worldEdit = "CkT32vix", worldGuard =
 val mc26_1 = DevServer("26.1.2", worldEdit = "YFnqiUlL", worldGuard = "btHBavWa")
 // 26.2: WorldEdit 7.4.6 + WorldGuard 7.0.19 (Modrinth lists 26.2-26.3 for both).
 val mc26_2 = DevServer("26.2", worldEdit = "YFnqiUlL", worldGuard = "TtfwTyi6")
+// 26.3: same WorldEdit 7.4.6 + WorldGuard 7.0.19 builds (Modrinth lists 26.2-26.3).
+val mc26_3 = DevServer("26.3", worldEdit = "YFnqiUlL", worldGuard = "TtfwTyi6")
 
 fun RunServer.devServer(server: DevServer) {
     minecraftVersion(server.minecraft)
@@ -142,3 +145,4 @@ val selfTest = registerSelfTest("selfTest", mc1_21_11, "run-selftest", 25591)
 val selfTest_1_21_11_java21 = registerSelfTest("selfTest_1_21_11_java21", mc1_21_11_java21, "run-selftest-java21", 25594)
 val selfTest_26_1 = registerSelfTest("selfTest_26_1", mc26_1, "run-selftest-26_1", 25592)
 val selfTest_26_2 = registerSelfTest("selfTest_26_2", mc26_2, "run-selftest-26_2", 25593)
+val selfTest_26_3 = registerSelfTest("selfTest_26_3", mc26_3, "run-selftest-26_3", 25595)
