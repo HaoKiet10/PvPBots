@@ -26,6 +26,7 @@ internal class SkillSelfTest(private val t: SelfTest, private val plugin: PvpBot
     suspend fun SequenceScope<Int>.run() {
         adaptive()
         pinned()
+        ownerDies()
         leaveAndStorage()
     }
 
@@ -101,6 +102,41 @@ internal class SkillSelfTest(private val t: SelfTest, private val plugin: PvpBot
                 "S1 pinned arena",
                 trackerDuringFight == null && hard && ended >= 0 && after == null,
                 "tracker during the fight ${trackerDuringFight != null}, profile still the hard one $hard, bot gone after $ended ticks, stored rating $after",
+            )
+        }
+        plugin.director.onAreaChange(owner.id, arena, null, t.nowMs())
+        t.removeDummy(owner)
+    }
+
+    /** S1 owner dies: a death from a non-trainer cause during FIGHTING counts as a bot win (-2 and the pull toward the fight end). */
+    private suspend fun SequenceScope<Int>.ownerDies() {
+        val s = manager.config.settings.skill
+        val arena = area("selftest_s1_death", 1680, null)
+        val owner = t.spawnDummy("Mortal", 1680, 0)
+        val p = owner.bukkit
+        val old = 60.0
+        p.persistentDataContainer.set(pdcKey, PersistentDataType.DOUBLE, old)
+        yield(5)
+        val key = SessionKey.Trainer(owner.id)
+        plugin.director.onAreaChange(owner.id, null, arena, t.nowMs())
+        waitUntil(60) { t.trainerBot(key) != null }
+        val bot = t.trainerBot(key)
+        val tracker = manager.tracker(owner.id)
+        val fighting = bot != null && waitUntil(200) { plugin.director.fighting(bot.id) } >= 0
+        if (bot == null || tracker == null || !fighting) {
+            t.check("S1 owner death", false, "no fight (bot ${bot != null}, tracker ${tracker != null}, fighting $fighting)")
+        } else {
+            yield(10)
+            val current = tracker.current
+            val expected = RatingUpdate.after(old, current, Outcome.BOT_WON, s)
+            p.damage(1000.0) // no damager: not the trainer
+            val died = p.isDead
+            val ended = waitUntil(40) { manager.tracker(owner.id) == null }
+            val after = stored(p)
+            t.check(
+                "S1 owner death",
+                died && ended >= 0 && after != null && abs(after - expected) < 1e-9 && after < old,
+                "owner died from a non-trainer cause: $died; tracker gone after $ended ticks; stored $after, expected $expected (old $old, fight end $current, bot won)",
             )
         }
         plugin.director.onAreaChange(owner.id, arena, null, t.nowMs())

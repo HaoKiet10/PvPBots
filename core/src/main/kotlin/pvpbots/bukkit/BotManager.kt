@@ -142,7 +142,7 @@ class BotManager(
             val at = Location(world, point.x + 0.5, point.y.toDouble(), point.z + 0.5, facing.yaw, facing.pitch)
             // A trainer in an arena without a fixed difficulty adapts to its owner's rating (§6); everything else is fixed.
             val adaptiveOwner = (key as? SessionKey.Trainer)?.owner?.takeIf { difficulty == null }
-            val rating = adaptiveOwner?.let { (near as? Player)?.let(skillStore::get) ?: config.settings.skill.startRating }
+            val rating = adaptiveOwner?.let { (Bukkit.getEntity(it) as? Player)?.let(skillStore::get) ?: config.settings.skill.startRating }
             val profile = if (rating != null) {
                 SkillBlender.startProfile(rating, config.profiles, area.kit)
             } else {
