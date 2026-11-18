@@ -17,6 +17,18 @@ bot:
   stuck-teleport-seconds: 10
   spawns-per-tick: 2          # max bots spawned per server tick (each spawn costs ~5 ms); the rest wait (min 1)
 
+# Hidden per-player skill rating (0..100) used by adaptive trainer areas (no pvpbot-difficulty flag).
+skill:
+  start-rating: 50
+  adjust-every-seconds: 5     # how often the bot's skill is re-tuned during a fight (min 1)
+  step: 3.0                   # rating change per adjustment
+  dead-zone: 0.15             # health-fraction lead (beyond target-lead) that counts as clearly ahead/behind
+  target-lead: 0.05           # the bot aims to leave the player this far ahead in health
+  max-shift-per-fight: 15.0   # a fight never moves the rating more than this from where it began
+  learn-rate: 0.3             # how far the stored rating moves toward where the fight ended
+  win-bonus: 4.0
+  loss-penalty: 2.0
+
 # Bot skins. Each entry is a signed Mojang texture property: the base64 "value" and its "signature", copied from
 # a player profile fetched with signatures, e.g.
 #   https://sessionserver.mojang.com/session/minecraft/profile/<uuid-without-dashes>?unsigned=false

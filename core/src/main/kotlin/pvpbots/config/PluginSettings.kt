@@ -1,6 +1,7 @@
 package pvpbots.config
 
 import pvpbots.session.Timings
+import pvpbots.skill.SkillSettings
 
 data class PluginSettings(
     val maxBots: Int,
@@ -10,6 +11,7 @@ data class PluginSettings(
     val stuckTeleportSeconds: Int,
     /** At most this many bots are spawned per server tick (a spawn costs several ms); the rest wait their turn. */
     val spawnsPerTick: Int,
+    val skill: SkillSettings = SkillSettings(),
 ) {
     companion object {
         fun load(root: Map<String, Any?>): Loaded<PluginSettings> {
@@ -32,6 +34,7 @@ data class PluginSettings(
                 stuckRetrySeconds = bot.int("stuck-retry-seconds", 5),
                 stuckTeleportSeconds = bot.int("stuck-teleport-seconds", 10),
                 spawnsPerTick = bot.int("spawns-per-tick", 2, min = 1),
+                skill = SkillSettings.load(r.section("skill") ?: empty),
             )
             return Loaded(settings, w)
         }

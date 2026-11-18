@@ -91,7 +91,7 @@ class BotManager(
         return sum / n / 1_000_000.0
     }
 
-    override fun spawn(key: SessionKey, role: Role, difficulty: Difficulty, area: AreaRef, nearPlayer: UUID): UUID? {
+    override fun spawn(key: SessionKey, role: Role, difficulty: Difficulty?, area: AreaRef, nearPlayer: UUID): UUID? {
         val start = System.nanoTime()
         try {
             return spawnTimed(key, role, difficulty, area, nearPlayer)
@@ -100,7 +100,7 @@ class BotManager(
         }
     }
 
-    private fun spawnTimed(key: SessionKey, role: Role, difficulty: Difficulty, area: AreaRef, nearPlayer: UUID): UUID? {
+    private fun spawnTimed(key: SessionKey, role: Role, difficulty: Difficulty?, area: AreaRef, nearPlayer: UUID): UUID? {
         try {
             val world = Bukkit.getWorld(area.world) ?: return null.also { logger.warning("Bot spawn: world ${area.world} is not loaded") }
             val near = Bukkit.getEntity(nearPlayer)
@@ -116,7 +116,7 @@ class BotManager(
             val ne = (near as? org.bukkit.entity.LivingEntity)?.eyeLocation ?: nl
             val facing = Aim.lookAt(eye, Vec3(ne.x, ne.y, ne.z))
             val at = Location(world, point.x + 0.5, point.y.toDouble(), point.z + 0.5, facing.yaw, facing.pitch)
-            val profile = config.profiles.getValue(difficulty)
+            val profile = config.profiles.getValue(difficulty ?: Difficulty.MEDIUM) // adaptive spawning arrives with the skill integration
             val skin = config.skins.pick(rng)
             val id = UUID.randomUUID()
             val handle = BotProfiler.spawnPart(BotProfiler.SpawnPart.ADAPTER) { adapter.spawn(BotSpec(nameFor(role, id), id, skin?.value, skin?.signature), at) }

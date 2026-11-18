@@ -7,7 +7,10 @@ data class AreaRef(
     val world: String,
     val regionId: String,
     val role: Role,
-    val difficulty: Difficulty,
+    /** Null = adaptive (trainers; the player's skill rating decides) / medium (allies). */
+    val difficulty: Difficulty?,
     val count: Int,
     val bounds: Bounds,
+    val arena: String? = null,
+    val kit: String? = null,
 )

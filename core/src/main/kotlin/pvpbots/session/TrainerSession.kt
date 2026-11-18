@@ -1,5 +1,6 @@
 package pvpbots.session
 
+import pvpbots.skill.Outcome
 import java.util.UUID
 
 /** One player's personal 1v1 duel: queue -> countdown -> fight -> rematch wait. Pure; time is passed in. */
@@ -69,12 +70,12 @@ class TrainerSession(private val owner: UUID, private val area: AreaRef, private
         return out
     }
 
-    fun ownerDied(nowMs: Long): List<Effect> = endRound(nowMs, Messages.TRAINER_WON)
+    fun ownerDied(nowMs: Long): List<Effect> = endRound(nowMs, Messages.TRAINER_WON, Outcome.BOT_WON)
 
-    fun botDied(nowMs: Long): List<Effect> = endRound(nowMs, Messages.YOU_WON)
+    fun botDied(nowMs: Long): List<Effect> = endRound(nowMs, Messages.YOU_WON, Outcome.PLAYER_WON)
 
     /** The bot was dropped after an internal failure: ends the round like [botDied] but without a title. */
-    fun botFailed(nowMs: Long): List<Effect> = endRound(nowMs, null)
+    fun botFailed(nowMs: Long): List<Effect> = endRound(nowMs, null, Outcome.NO_RESULT)
 
     fun tick(nowMs: Long): List<Effect> = when (state) {
         State.COUNTDOWN -> {
@@ -85,7 +86,7 @@ class TrainerSession(private val owner: UUID, private val area: AreaRef, private
             emptyList()
         }
         State.FIGHTING ->
-            if (nowMs - phaseStartMs >= t.timeLimitS * 1000L) endRound(nowMs, Messages.DRAW) else emptyList()
+            if (nowMs - phaseStartMs >= t.timeLimitS * 1000L) endRound(nowMs, Messages.DRAW, Outcome.DRAW) else emptyList()
         State.REMATCH_WAIT ->
             if (nowMs - phaseStartMs >= t.rematchDelayS * 1000L) {
                 state = State.QUEUED
@@ -95,13 +96,14 @@ class TrainerSession(private val owner: UUID, private val area: AreaRef, private
         else -> emptyList()
     }
 
-    /** Ends the current round; the title is shown only if the fight had begun. */
-    private fun endRound(nowMs: Long, title: String?): List<Effect> {
+    /** Ends the current round; the title and [outcome] count only if the fight had begun (else NO_RESULT). */
+    private fun endRound(nowMs: Long, title: String?, outcome: Outcome): List<Effect> {
         val wasFighting = state == State.FIGHTING
         if (state != State.FIGHTING && state != State.COUNTDOWN) return emptyList()
         val out = mutableListOf<Effect>()
         bot?.let { out += Effect.RemoveBot(it) }
         if (wasFighting && title != null) out += Effect.Title(owner, title)
+        out += Effect.RoundEnded(owner, if (wasFighting) outcome else Outcome.NO_RESULT)
         bot = null
         state = State.REMATCH_WAIT
         phaseStartMs = nowMs

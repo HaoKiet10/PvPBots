@@ -3,6 +3,7 @@ package pvpbots.session
 import pvpbots.math.BlockPos
 import pvpbots.math.Bounds
 import pvpbots.profile.Difficulty
+import pvpbots.skill.Outcome
 import pvpbots.session.TrainerSession.State.*
 import java.util.UUID
 import kotlin.test.Test
@@ -28,7 +29,7 @@ class TrainerSessionTest {
     @Test fun fullRound_ownerWins() {
         val s = trainer(); s.start(0); s.slotGranted(0); s.botSpawned(BOT, 0); s.tick(3000)
         assertEquals(FIGHTING, s.state())
-        assertEquals(listOf(Effect.RemoveBot(BOT), Effect.Title(OWNER, Messages.YOU_WON)), s.botDied(10_000))
+        assertEquals(listOf(Effect.RemoveBot(BOT), Effect.Title(OWNER, Messages.YOU_WON), Effect.RoundEnded(OWNER, Outcome.PLAYER_WON)), s.botDied(10_000))
         assertEquals(REMATCH_WAIT, s.state())
         assertNull(s.botId())
     }
@@ -43,7 +44,7 @@ class TrainerSessionTest {
     @Test fun timeLimitDraw() {
         val s = fighting()
         assertTrue(s.tick(302_999).isEmpty())
-        assertEquals(listOf(Effect.RemoveBot(BOT), Effect.Title(OWNER, Messages.DRAW)), s.tick(303_000))
+        assertEquals(listOf(Effect.RemoveBot(BOT), Effect.Title(OWNER, Messages.DRAW), Effect.RoundEnded(OWNER, Outcome.DRAW)), s.tick(303_000))
         assertEquals(REMATCH_WAIT, s.state())
     }
 
@@ -59,7 +60,7 @@ class TrainerSessionTest {
 
     @Test fun ownerDiedDuringCountdown_removesBot() {
         val s = trainer(); s.start(0); s.slotGranted(0); s.botSpawned(BOT, 0)
-        assertEquals(listOf(Effect.RemoveBot(BOT)), s.ownerDied(1000))
+        assertEquals(listOf(Effect.RemoveBot(BOT), Effect.RoundEnded(OWNER, Outcome.NO_RESULT)), s.ownerDied(1000))
         assertEquals(REMATCH_WAIT, s.state())
     }
 
@@ -105,13 +106,13 @@ class TrainerSessionTest {
 
     @Test fun ownerDiedWhileFighting_trainerWon() {
         val s = fighting()
-        assertEquals(listOf(Effect.RemoveBot(BOT), Effect.Title(OWNER, Messages.TRAINER_WON)), s.ownerDied(5000))
+        assertEquals(listOf(Effect.RemoveBot(BOT), Effect.Title(OWNER, Messages.TRAINER_WON), Effect.RoundEnded(OWNER, Outcome.BOT_WON)), s.ownerDied(5000))
         assertEquals(REMATCH_WAIT, s.state())
     }
 
     @Test fun botDiedDuringCountdown_removesBotNoTitle() {
         val s = trainer(); s.start(0); s.slotGranted(0); s.botSpawned(BOT, 0)
-        assertEquals(listOf(Effect.RemoveBot(BOT)), s.botDied(1000))
+        assertEquals(listOf(Effect.RemoveBot(BOT), Effect.RoundEnded(OWNER, Outcome.NO_RESULT)), s.botDied(1000))
         assertEquals(REMATCH_WAIT, s.state())
     }
 
@@ -174,5 +175,36 @@ class TrainerSessionTest {
         assertTrue(s.spawnFailed(10).isEmpty())
         assertEquals(QUEUED, s.state())
         assertEquals(1, s.slotGranted(5_000).size)
+    }
+
+    @Test fun botDied_emitsRoundEndedPlayerWon() {
+        assertTrue(Effect.RoundEnded(OWNER, Outcome.PLAYER_WON) in fighting().botDied(10_000))
+    }
+
+    @Test fun ownerDiedWhileFighting_emitsBotWon() {
+        assertTrue(Effect.RoundEnded(OWNER, Outcome.BOT_WON) in fighting().ownerDied(10_000))
+    }
+
+    @Test fun timeLimit_emitsDraw() {
+        assertTrue(Effect.RoundEnded(OWNER, Outcome.DRAW) in fighting().tick(303_000))
+    }
+
+    @Test fun ownerDiedInCountdown_emitsNoResult() {
+        val s = trainer(); s.start(0); s.slotGranted(0); s.botSpawned(BOT, 0)
+        assertTrue(Effect.RoundEnded(OWNER, Outcome.NO_RESULT) in s.ownerDied(1000))
+    }
+
+    @Test fun botFailed_emitsNoResult() {
+        assertTrue(Effect.RoundEnded(OWNER, Outcome.NO_RESULT) in fighting().botFailed(10_000))
+    }
+
+    @Test fun ownerLeft_emitsNoRoundEnded() {
+        assertTrue(fighting().ownerLeft().none { it is Effect.RoundEnded })
+    }
+
+    @Test fun adaptiveArea_spawnsWithNullDifficulty() {
+        val s = TrainerSession(OWNER, area.copy(difficulty = null), Timings(3, 300, 5, 15, 10))
+        s.start(0)
+        assertEquals(listOf(Effect.SpawnBot(KEY, Role.TRAINER, null, OWNER)), s.slotGranted(0))
     }
 }

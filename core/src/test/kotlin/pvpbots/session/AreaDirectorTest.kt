@@ -249,6 +249,13 @@ class AreaDirectorTest {
         assertEquals(1, port.removed.size)
     }
 
+    @Test fun roundEnded_forwardedToPort() {
+        director(10)
+        enter(P1, ARENA); d.tick(3000)
+        d.onPlayerDeath(P1, 4000)
+        assertEquals(listOf(P1 to pvpbots.skill.Outcome.BOT_WON), port.roundEnds)
+    }
+
     @Test fun trainerBotDeath_endsRoundAndRematchSpawnsAgain() {
         director(10)
         enter(P1, ARENA); d.tick(3000)

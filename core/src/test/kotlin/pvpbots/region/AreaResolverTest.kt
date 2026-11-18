@@ -46,8 +46,18 @@ class AreaResolverTest {
         assertEquals(3, AreaResolver.resolve(listOf(region("a", 0, Role.ALLY)), 3)!!.count)
     }
 
-    @Test fun missingDifficulty_defaultsToMedium() {
-        assertEquals(Difficulty.MEDIUM, AreaResolver.resolve(listOf(region("a", 0, Role.TRAINER)), 100)!!.difficulty)
+    @Test fun missingDifficulty_trainerIsAdaptive() {
+        assertNull(AreaResolver.resolve(listOf(region("a", 0, Role.TRAINER)), 100)!!.difficulty)
         assertEquals(Difficulty.HARD, AreaResolver.resolve(listOf(region("a", 0, Role.TRAINER, Difficulty.HARD)), 100)!!.difficulty)
+    }
+
+    @Test fun missingDifficulty_allyIsMedium() {
+        assertEquals(Difficulty.MEDIUM, AreaResolver.resolve(listOf(region("a", 0, Role.ALLY)), 100)!!.difficulty)
+    }
+
+    @Test fun arenaAndKit_passedThrough() {
+        val r = AreaResolver.resolve(listOf(RegionInfo("world", "a", 0, Role.TRAINER, null, null, b, arena = "pit", kit = "diamond")), 100)!!
+        assertEquals("pit", r.arena)
+        assertEquals("diamond", r.kit)
     }
 }

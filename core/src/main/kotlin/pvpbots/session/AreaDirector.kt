@@ -280,6 +280,7 @@ class AreaDirector(
                 guarded("removing bot ${e.botId}") { port.remove(e.botId) }
                 if (alive.remove(e.botId) != null) releaseSlot()
             }
+            is Effect.RoundEnded -> guarded("round end for ${e.owner}") { port.roundEnded(e.owner, e.outcome) }
             is Effect.Title -> guarded("title for ${e.player}") { port.title(e.player, e.text) }
             is Effect.ActionBar -> guarded("action bar for ${e.player}") { port.actionBar(e.player, e.text) }
         }

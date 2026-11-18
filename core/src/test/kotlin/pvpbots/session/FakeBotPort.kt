@@ -5,7 +5,7 @@ import java.util.UUID
 
 /** Records every [BotPort] call. Spawned bot ids are deterministic (0x100 + n). */
 class FakeBotPort : BotPort {
-    data class Spawn(val key: SessionKey, val role: Role, val difficulty: Difficulty, val area: AreaRef, val near: UUID, val botId: UUID)
+    data class Spawn(val key: SessionKey, val role: Role, val difficulty: Difficulty?, val area: AreaRef, val near: UUID, val botId: UUID)
 
     val bots = mutableSetOf<UUID>()
     val spawned = mutableListOf<Spawn>()
@@ -21,6 +21,7 @@ class FakeBotPort : BotPort {
     var failAllSpawns = false
     /** Players [isDead] reports as dead. */
     val deadPlayers = mutableSetOf<UUID>()
+    val roundEnds = mutableListOf<Pair<UUID, pvpbots.skill.Outcome>>()
     var spawnCalls = 0
     var onSpawn: ((Spawn) -> Unit)? = null
     private var counter = 0
@@ -32,7 +33,7 @@ class FakeBotPort : BotPort {
 
     override fun isBot(id: UUID) = id in bots
 
-    override fun spawn(key: SessionKey, role: Role, difficulty: Difficulty, area: AreaRef, nearPlayer: UUID): UUID? {
+    override fun spawn(key: SessionKey, role: Role, difficulty: Difficulty?, area: AreaRef, nearPlayer: UUID): UUID? {
         spawnCalls++
         throwOnNextSpawn?.let { throwOnNextSpawn = null; throw it }
         if (failAllSpawns) return null
@@ -49,6 +50,10 @@ class FakeBotPort : BotPort {
 
     override fun remove(botId: UUID) {
         removed += botId
+    }
+
+    override fun roundEnded(owner: UUID, outcome: pvpbots.skill.Outcome) {
+        roundEnds += owner to outcome
     }
 
     override fun isDead(player: UUID) = player in deadPlayers
