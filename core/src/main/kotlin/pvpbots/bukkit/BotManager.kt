@@ -4,7 +4,12 @@ import net.kyori.adventure.text.Component
 import net.kyori.adventure.title.Title
 import org.bukkit.Bukkit
 import org.bukkit.Location
+import org.bukkit.attribute.Attribute
+import org.bukkit.entity.Entity
 import org.bukkit.entity.Player
+import org.bukkit.entity.Projectile
+import org.bukkit.event.entity.EntityDamageByEntityEvent
+import org.bukkit.event.entity.EntityDamageEvent
 import pvpbots.adapter.BotAdapter
 import pvpbots.adapter.BotHandle
 import pvpbots.adapter.BotSpec
@@ -19,6 +24,11 @@ import pvpbots.session.AreaRef
 import pvpbots.session.BotPort
 import pvpbots.session.Role
 import pvpbots.session.SessionKey
+import pvpbots.session.TrainerSession
+import pvpbots.skill.FightJudge
+import pvpbots.skill.Outcome
+import pvpbots.skill.RatingUpdate
+import pvpbots.skill.SkillBlender
 import java.util.UUID
 import java.util.logging.Level
 import java.util.logging.Logger
@@ -78,6 +88,13 @@ class BotManager(
     private var distanceWarned = false
     private val failureLog = FailureLog()
 
+    val skillStore = SkillStore { config.settings.skill }
+
+    /** Adaptive fights in progress, by owner. Dropped by [roundEnded], when the session is gone, and on [removeAll]. */
+    private val trackers = HashMap<UUID, FightTracker>()
+
+    fun tracker(owner: UUID): FightTracker? = trackers[owner]
+
     override fun isBot(id: UUID): Boolean = id in bots
 
     fun record(id: UUID): BotRecord? = bots[id]
@@ -123,9 +140,16 @@ class BotManager(
             val ne = (near as? org.bukkit.entity.LivingEntity)?.eyeLocation ?: nl
             val facing = Aim.lookAt(eye, Vec3(ne.x, ne.y, ne.z))
             val at = Location(world, point.x + 0.5, point.y.toDouble(), point.z + 0.5, facing.yaw, facing.pitch)
-            val base = config.profiles.getValue(difficulty ?: Difficulty.MEDIUM) // adaptive spawning arrives with the skill integration
-            // In a kit arena (§5.6) the bot fights in the arena's kit whatever its difficulty.
-            val profile = area.kit?.let { base.copy(kit = it) } ?: base
+            // A trainer in an arena without a fixed difficulty adapts to its owner's rating (§6); everything else is fixed.
+            val adaptiveOwner = (key as? SessionKey.Trainer)?.owner?.takeIf { difficulty == null }
+            val rating = adaptiveOwner?.let { (near as? Player)?.let(skillStore::get) ?: config.settings.skill.startRating }
+            val profile = if (rating != null) {
+                SkillBlender.startProfile(rating, config.profiles, area.kit)
+            } else {
+                val base = config.profiles.getValue(difficulty ?: Difficulty.MEDIUM)
+                // In a kit arena (§5.6) the bot fights in the arena's kit whatever its difficulty.
+                area.kit?.let { base.copy(kit = it) } ?: base
+            }
             val skin = config.skins.pick(rng)
             val id = UUID.randomUUID()
             val handle = BotProfiler.spawnPart(BotProfiler.SpawnPart.ADAPTER) { adapter.spawn(BotSpec(nameFor(role, id), id, skin?.value, skin?.signature), at) }
@@ -135,6 +159,7 @@ class BotManager(
                 val controller = BotController(this, handle, key, role, profile, area, facing)
                 val record = BotRecord(handle, key, role, profile, area, controller)
                 bots[handle.id] = record
+                if (adaptiveOwner != null && rating != null) trackers[adaptiveOwner] = FightTracker(adaptiveOwner, handle.id, rating)
                 spawnObserver?.invoke(record)
                 for (l in spawnListeners) TickIsolation.guard({ l(record) }) { e -> logFailure(e, "Spawn listener failed for bot ${handle.id}", Level.SEVERE) }
                 return handle.id
@@ -143,6 +168,7 @@ class BotManager(
             } catch (e: Throwable) {
                 // The entity exists but the bot is unusable: never leave it in the world outside the registry.
                 bots.remove(handle.id)
+                trackers.values.removeIf { it.botId == handle.id }
                 TickIsolation.guard({ adapter.remove(handle) }) { r -> e.addSuppressed(r) }
                 throw e
             }
@@ -207,9 +233,69 @@ class BotManager(
             logFailure(e, "Bot ${r.handle} (session ${r.key}) failed and was removed", Level.SEVERE)
             failed(r.id)
         }
+        TickIsolation.guard({ tickTrackers() }) { e -> logFailure(e, "Skill adjustment failed", Level.SEVERE) }
         lastTickNanos = System.nanoTime() - start
         tickNanos[tickSamples % tickNanos.size] = lastTickNanos
         tickSamples++
+    }
+
+    /** Every `adjust-every-seconds` of fighting, steps each adaptive bot's in-fight rating and retunes its number settings. */
+    private fun tickTrackers() {
+        if (trackers.isEmpty()) return
+        val period = config.settings.skill.adjustEverySeconds * 20
+        val it = trackers.values.iterator()
+        while (it.hasNext()) {
+            val tr = it.next()
+            val state = director.trainerFor(tr.owner)?.state()
+            if (state == null || state == TrainerSession.State.ENDED) { // the owner left or the director was replaced: no round end will come
+                it.remove()
+                continue
+            }
+            if (!director.fighting(tr.botId)) {
+                tr.resetWindow()
+                continue
+            }
+            if (tr.tickFighting(period)) adjust(tr)
+        }
+    }
+
+    private fun adjust(tr: FightTracker) {
+        val record = bots[tr.botId]
+        val owner = Bukkit.getEntity(tr.owner) as? Player
+        if (record == null || owner == null) return tr.resetWindow()
+        val playerFrac = healthFraction(owner)
+        val botFrac = healthFraction(record.player)
+        if (!playerFrac.isFinite() || !botFrac.isFinite()) return tr.resetWindow() // no signal this window
+        val before = tr.current
+        tr.current = FightJudge.next(before, tr.start, tr.closeWindow(playerFrac, botFrac), config.settings.skill)
+        if (tr.current != before) record.controller.retune(SkillBlender.retune(record.controller.profile, tr.current, config.profiles))
+    }
+
+    /** Health as a fraction of max health; NaN or infinite when max health is 0 (the caller skips such a window). */
+    private fun healthFraction(p: Player): Double = p.health / (p.getAttribute(Attribute.MAX_HEALTH)?.value ?: 20.0)
+
+    /**
+     * Counts damage for the fight judge (EntityDamageEvent, MONITOR): everything the owner takes, and what the owner
+     * (directly or with a projectile) deals to their own trainer. Only while that trainer's round is FIGHTING.
+     */
+    fun countDamage(event: EntityDamageEvent) {
+        if (trackers.isEmpty()) return
+        val victim = event.entity.uniqueId
+        val amount = event.finalDamage
+        trackers[victim]?.let { if (director.fighting(it.botId)) it.taken(amount) }
+        val owner = (bots[victim]?.key as? SessionKey.Trainer)?.owner ?: return
+        val tr = trackers[owner]?.takeIf { it.botId == victim && director.fighting(victim) } ?: return
+        val damager = (event as? EntityDamageByEntityEvent)?.damager ?: return
+        val source = (damager as? Projectile)?.shooter as? Entity ?: damager
+        if (source.uniqueId == owner) tr.dealt(amount)
+    }
+
+    /** The round ended after the bot was removed: the tracker (read once, then dropped) moves the stored rating on a result. */
+    override fun roundEnded(owner: UUID, outcome: Outcome) {
+        val tr = trackers.remove(owner) ?: return
+        if (outcome == Outcome.NO_RESULT) return
+        val player = Bukkit.getEntity(owner) as? Player ?: return
+        skillStore.set(player, RatingUpdate.after(skillStore.get(player), tr.current, outcome, config.settings.skill))
     }
 
     /** Ends a bot as if it died, but without a win title (the director counts the failure). The bot is always removed. */
@@ -238,6 +324,7 @@ class BotManager(
     /** Removes every bot immediately (used after director.shutdown(), which should already have done it). */
     fun removeAll() {
         for (id in bots.keys.toList()) remove(id)
+        trackers.clear()
     }
 
     private fun applyDistances(p: Player) {

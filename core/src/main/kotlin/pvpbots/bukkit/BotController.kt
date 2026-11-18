@@ -49,10 +49,13 @@ class BotController(
     private val handle: BotHandle,
     private val key: SessionKey,
     private val role: Role,
-    private val profile: DifficultyProfile,
+    profile: DifficultyProfile,
     private val area: AreaRef,
     initialLook: Rotation,
 ) {
+    /** The settings the bot fights with now; only the number settings change during a fight ([retune]). */
+    var profile: DifficultyProfile = profile
+        private set
     private val rng = Random.Default
     private val brain = BrainState(profile, rng)
     private val stuck = StuckDetector(manager.config.settings.stuckRetrySeconds * 20, manager.config.settings.stuckTeleportSeconds * 20)
@@ -86,6 +89,15 @@ class BotController(
         "ticks=$statTicks noTarget=$statNoTarget attackIntents=$statAttackIntents fairHits=$statHits " +
             "minDist=${if (statMinDist == Double.MAX_VALUE) "-" else "%.2f".format(statMinDist)} " +
             "cooldown=${"%.2f".format(handle.bukkit.attackCooldown)} look=$look last=$statLastIntent"
+
+    /**
+     * Swaps in a re-blended profile mid-fight. The brain state is kept (the cooldown threshold is re-sampled on the
+     * next swing as before), and the refresh clock uses the new reaction time from its next check on.
+     */
+    fun retune(newProfile: DifficultyProfile) {
+        profile = newProfile
+        refreshClock.setPeriod(newProfile.reactionTicks)
+    }
 
     fun tick(tick: Long) {
         val bot = handle.bukkit

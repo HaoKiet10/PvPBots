@@ -28,6 +28,20 @@ class RefreshClockTest {
         assertEquals(setOf(1001L, 1002L, 1003L), nextDue)
     }
 
+    @Test fun setPeriod_appliesNextDue() {
+        val c = RefreshClock(10, Random(1))
+        c.mark(1000)
+        c.mark(1000)
+        c.setPeriod(3)
+        assertFalse(c.due(1002))
+        assertTrue(c.due(1003))
+        c.setPeriod(20)
+        assertFalse(c.due(1019))
+        assertTrue(c.due(1020))
+        c.setPeriod(0) // below 1 acts as 1
+        assertTrue(c.due(1001))
+    }
+
     @Test fun periodBelowOneActsAsOne() {
         val c = RefreshClock(0, Random(1))
         c.mark(5)

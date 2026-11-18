@@ -8,9 +8,14 @@ import kotlin.random.Random
  * Pure; time is passed in.
  */
 class RefreshClock(periodTicks: Int, private val rng: Random) {
-    private val period = periodTicks.coerceAtLeast(1)
+    private var period = periodTicks.coerceAtLeast(1)
     private var last = NEVER
     private var marked = false
+
+    /** Changes the period; the next [due] check already uses it (the last refresh time is kept). */
+    fun setPeriod(ticks: Int) {
+        period = ticks.coerceAtLeast(1)
+    }
 
     fun due(tick: Long): Boolean = tick - last >= period
 
