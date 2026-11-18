@@ -29,6 +29,7 @@ slots). v2 only prepares for it: built arenas carry spawn pads for up to 5 per s
 - 5v5 / team matches (waiting on the owner; see §7).
 - Any change to boss areas (the user deferred this: "do other thing first when i ask for this").
 - Admin-made arena templates from WorldEdit schematics (approach C, possible later).
+- Kit arenas for hand-drawn regions (user: built arenas only).
 - Player-visible ratings, ranks or leaderboards.
 
 **Anti-goals** (failures even if it technically works)
@@ -68,7 +69,8 @@ The user picked **A**.
 ### 5.1 What the admin does
 
 ```
-/pvpbots arena create <name> <duel|squad|team> [confirm]   build an arena centred on where you stand
+/pvpbots arena create <name> <duel|squad|team> [kit] [confirm]   build an arena centred on where you stand
+/pvpbots arena kit <name> <kit|none>                       set or clear the arena's fixed kit (§5.6)
 /pvpbots arena remove <name> [confirm]                     tear it down and restore what was there
 /pvpbots arena list                                        name, world, position, size, players inside
 ```
@@ -143,6 +145,39 @@ affected, any problems) and only act when repeated with `confirm`. Players still
   the region.
 - Hand-drawn trainer regions from v1 keep working exactly as before.
 
+### 5.6 Kit arenas (built arenas only)
+
+User's decision: a built arena may have a **fixed kit**, and then **both the player and the bot fight in that kit**,
+so the fight is about skill, not gear. Hand-drawn regions never do this.
+
+- **Setting it:** optional `[kit]` on `arena create`, or `arena kit <name> <kit|none>` later. The kit name must be
+  one of the `kits:` in `config.yml` (the existing starter/iron/diamond/netherite, plus any the admin adds there).
+  Stored in `arenas.yml`. No kit = the player keeps their own gear and the bot's kit follows the rating (§6.1).
+- **Entering:** when a player in survival or adventure mode enters a kit arena (my call: creative and spectator are
+  left alone, as they get no trainer either), the plugin:
+  1. saves their whole inventory (main, armor, off-hand) to `plugins/PvpBots/stash/<uuid>.dat`, written and flushed
+     **before** anything in the inventory changes;
+  2. clears the inventory and gives the arena kit;
+  3. sets full health and hunger (my call: everyone starts equal). Potion effects and XP are not touched.
+- **The bot** gets the same kit, whatever the rating. Skill matching still adapts aim, timing and tricks (§6).
+- **Each new round** (after a win, loss or draw), the player's kit is given again fresh, so used apples, broken
+  shields and spent arrows are refilled; the bot spawns with a fresh kit as in v1.
+- **Getting items back:** the stash is restored (inventory cleared, saved items put back, stash file deleted) when
+  the player:
+  - walks out of the arena region;
+  - respawns after dying (they respawn outside the arena);
+  - logs out (restored before the server saves their data);
+  - is online when the plugin disables or the arena is removed or its kit is changed.
+- **Crash safety:** if the server crashes while a player is in a kit arena, the stash file is still on disk; when
+  that player next joins, the plugin restores it before they can do anything. The file is only deleted after a
+  successful restore. If a stash file cannot be read, the plugin keeps the file, leaves the inventory as it is,
+  tells the player and logs an error for the admin: it never deletes items it could not restore.
+- **No smuggling:** in a kit arena, dropping items is blocked, and a player death drops nothing (no kit items on the
+  floor), keeping XP as vanilla would.
+- **Testing additions:** unit test for the stash encode/decode round-trip; self-test K1 (enter a kit arena: items
+  saved and kit given; leave: original items back exactly) and K2 (a stash file present on join is restored and
+  deleted).
+
 ## 6. Adaptive skill
 
 ### 6.1 Skill as a number
@@ -156,6 +191,7 @@ affected, any problems) and only act when repeated with `confirm`. Players still
     value until the rating is within 5 of the higher anchor, so new tricks and gear appear only near the next tier
     (my call: one rule for all of them, so tricks and gear never disagree; at the default 50 that means medium
     tricks and the iron kit);
+  - in a kit arena (§5.6) the kit is always the arena's kit instead;
   - on/off settings, choice settings and the kit are **fixed at the start of the fight** from the starting rating
     (my call: switching any of them mid-fight would be visible). Only the number settings move during a fight.
 - The difficulty profiles in `config.yml` keep their meaning and stay tunable; they are now the anchors.
