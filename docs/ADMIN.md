@@ -99,15 +99,28 @@ itself at the next start** (a removal restores from the snapshot, a build is red
 no blocks are changed, an error is logged and `arena list` shows `job failed, see the server log`: fix or restore
 the file and restart.
 
-**`remove`** ends every fight in the arena, hands kit-arena players their items back, deletes the region, then
-**restores the original terrain** from the snapshot and deletes the record and the snapshot. Players standing in the
-arena (floor, walls) may find the ground gone when the blocks revert; ask them to leave first. If the region was
-deleted by hand, the arena stays listed as `(region missing)` and `remove` still works.
+**What the snapshot covers:** exactly the blocks of the arena volume (floor, walls, the cleared space above). Physics
+the build sets off in **neighbouring** blocks outside that volume is not recorded and not undone: sand or gravel
+that falls into the cleared space, leaves that decay because their log was cleared, blocks attached to a cleared
+block (torches, signs, vines, doors) that pop off as items. Pick a spot where none of that matters, or check the edges
+after building.
+
+**`arenas.yml` entries that cannot be read** (hand-edited, say) are skipped at start with a `SEVERE` line naming them;
+`arenas.yml` is copied once to `arenas.yml.broken-<ms>` next to it, and the unreadable entries are **kept**: every
+later save writes them back exactly as they were, so their region and snapshot are not orphaned. Fix the entry by
+hand (compare with a good one) and restart; an arena with that name cannot be created meanwhile.
+
+**`remove`** ends every fight in the arena, hands kit-arena players their items back, deletes the region, moves every
+player standing in the footprint to just outside the entrance (on the highest block there), then **restores the
+original terrain** from the snapshot. When all blocks are back the world is saved to disk, and only then are the
+record and the snapshot deleted (a crash before that redoes the restore at the next start). If the region was
+deleted by hand, the arena stays listed as `(region missing)` and `remove` still works. If `arenas.yml` cannot be
+written, `remove` says so: kit-arena inventories in the arena were already given back, but the arena was not removed.
 
 **`<name>.snapshot.orphan-<ms>` files** in `plugins/PvpBots/arenas/` are snapshots that had no arena record when
 an arena with the same name was created (for example after `arenas.yml` was lost or hand-edited); the plugin moves
-them aside instead of overwriting, because they may hold original terrain. They are safe to keep and to inspect;
-delete one only when you know that terrain is not needed.
+them aside instead of overwriting, because they may hold original terrain. **Do not delete them.** Putting one back
+needs a developer (there is no command for it): keep the file and ask.
 
 **Kit arenas exist only for plugin-built arenas.** Hand-drawn regions never touch inventories.
 
@@ -119,22 +132,34 @@ both the player and the trainer fight in it, so the fight is about skill, not ge
 - **Entering** (survival or adventure mode only; creative and spectator are left alone): the player's whole
   inventory (main, armor, off-hand) is saved to `plugins/PvpBots/stash/<uuid>.dat`, written and flushed **before**
   anything changes; then the inventory is cleared, the kit given and health and hunger set to full. Each new round
-  gives the kit again fresh (used apples, arrows and broken shields are refilled).
+  gives the kit again fresh (used apples, arrows and broken shields are refilled). Every kit item a player gets is
+  tagged (`pvpbots:kit` on the item); bots' items are not, and bots in a kit arena get no bonus totem.
+- **Items that come in from outside** while a player wears the kit (an `/enderchest`, a trade, auction or mail GUI,
+  another plugin giving items) are the player's own: they are untagged, so the refill at the next round and the
+  restore on leaving hand them back (what does not fit is dropped at the player's feet) instead of clearing them. The
+  same goes for an item held on the cursor. Picking up items and arrows is blocked inside.
 - **Getting items back:** the saved items are restored and the file deleted when the player walks out of the arena,
   respawns after dying, or logs out (restored before the server saves them), and when the plugin is disabled or the
   arena is removed or its kit changed. Dropping items is blocked inside, and dying drops nothing (XP is kept).
 - **Crash safety:** after a server crash the stash file is still there; it is restored when the player next joins.
-  The file is deleted only after a successful restore.
+  If the inventory the server loads then holds no kit item (it was saved before the player entered), it is simply
+  replaced by the stash; if it holds kit items, any other items in it are handed back on top of the stash.
+  The file is deleted only after a successful restore **and** after the player's data was saved to disk (Paper would
+  otherwise save it only at the next autosave or logout). If that save fails, the file is kept, a `SEVERE` line says
+  so, and the save is retried when the player logs out; if the file is still there after a clean logout, compare the
+  player's inventory with it before deleting it (a later join would hand the stash out again).
 - **If the stash cannot be saved** when entering, nothing is changed: the player keeps their gear and is told.
 - **A stash that cannot be restored:** the plugin keeps the file, leaves the player's inventory as it is, tells the
   player ("Your items could not be restored automatically; an admin has been notified.") and logs a `SEVERE` line
-  naming the file: `Inventory stash of <name> (<uuid>) could not be restored; the file is kept: .../stash/<uuid>.dat`,
-  with the cause. A marker `plugins/PvpBots/stash/<uuid>.failed` remembers the failure across restarts.
+  naming the file: `Inventory stash of <name> (<uuid>) could not be restored; the file is kept: .../stash/<uuid>.dat`
+  (the player is still wearing the arena kit), with the cause. A marker `plugins/PvpBots/stash/<uuid>.failed`
+  remembers the failure across restarts; a `.failed` marker left without its `.dat` is cleared on the player's next
+  join.
   **Never delete the `.dat` while the player does not have their items back.** To recover: read the cause in the
   log (a corrupt or half-copied file, or an item the server version cannot read); fix or replace the `.dat` (for
   example from a backup, or by starting the server version that wrote it) and have the player rejoin. The next
-  successful restore also hands back whatever the player gathered meanwhile (what does not fit is dropped at their
-  feet), then removes the file and the marker. If it cannot be repaired, keep the file and ask a developer: it is the
+  successful restore also hands back everything the player holds that is not a tagged kit item (what they gathered
+  meanwhile; what does not fit is dropped at their feet), then removes the file and the marker. If it cannot be repaired, keep the file and ask a developer: it is the
   only copy of those items.
 - After a successful restore whose file cannot be deleted, the file is renamed `<uuid>.dat.restored-<ms>`; if even
   that fails an error says to delete it by hand, or the player would get that old inventory again after a restart.
@@ -173,7 +198,7 @@ no numbers. A player's death from any cause during the fight counts as a loss. F
 | `skill.target-lead` | 0.05 | The bot aims to leave the player this far ahead in health. |
 | `skill.max-shift-per-fight` | 15.0 | In one fight the rating never moves more than this from where it began. |
 | `skill.learn-rate` | 0.3 | How far the stored rating moves toward where the fight ended. |
-| `skill.win-bonus` / `skill.loss-penalty` | 4.0 / 2.0 | Extra nudge after a player win / a bot win (a draw: none). |
+| `skill.win-bonus` / `skill.loss-penalty` | 4.0 / 2.0 | Extra nudge: + `win-bonus` after a player win, − `loss-penalty` after a bot win (a draw: none). |
 | `arenas.blocks-per-tick` | 4000 | Blocks changed per tick while an arena is built or removed (min 1). |
 | `arenas.materials.<floor\|wall\|light\|pad-a\|pad-b\|cover>` | `SMOOTH_STONE`, `STONE_BRICKS`, `SEA_LANTERN`, `BLUE_CONCRETE`, `RED_CONCRETE`, `STONE_BRICKS` | Bukkit block names used by new arenas. |
 | `skins` | `[]` | Signed skin textures, see below. Empty = default skins. |

@@ -33,10 +33,6 @@ Please report any failure of (c) or (d), and whether the skin and tab hiding wor
 
 ---
 
-# Fix round 1 (commit `e7278f9`)
-
----
-
 # v2 manual checks (arenas, kit arenas, adaptive skill)
 
 Needs a person with a real client on the same Minecraft version as the dev server (`./gradlew :plugin:runServer`,
@@ -88,6 +84,27 @@ otherwise.
    not be restored automatically; an admin has been notified.", the log has a `SEVERE ... the file is kept` line and
    `<uuid>.dat` plus `<uuid>.failed` remain. Put the original file back and rejoin: items are back and both files
    are gone.
+
+10. Items from outside: walk in, open `/enderchest` (op) or any trade/mail GUI and move one of your own items into
+    your inventory. Win or lose a round: the item is still there next to the fresh kit. Walk out: it is back with
+    your original items, and no kit item remains.
+11. Kit change mid-fight: while fighting in `kit1`, `/pvpbots arena kit kit1 diamond`. Your items come back and you
+    are given the diamond kit at once; after the current round the next trainer wears diamond and you are refilled
+    with diamond.
+
+## B2. Crash drill (needs the ability to kill the server process)
+
+1. Inventory: walk into a kit arena and stay there past one autosave (`ticks-per.autosave` in `bukkit.yml`, by
+   default 6000 ticks = 5 min, or run `save-all` while inside). Walk out (items back, `.dat` gone), then **at once**
+   kill the server process hard (no `stop`). Start it and join: your own items are intact (not the kit), no `.dat`
+   file is left, nothing duplicated.
+2. Terrain: build a small arena (`duel`) on recognisable terrain and wait for `ready`. `/pvpbots arena remove <name>
+   confirm`, and as soon as `arena list` no longer shows it, kill the server hard (well before the next autosave).
+   Start it: the original terrain is back (no floor or wall blocks left), `arenas.yml` has no entry and no
+   `<name>.snapshot` is left. If the kill came before the removal finished, the log says the removal is resumed
+   and the same end state follows.
+3. Remove with a player inside: stand in the middle of an arena and remove it. You are moved just outside the
+   entrance, standing on the ground, not inside a block.
 
 ## C. Feel test (adaptive skill)
 
