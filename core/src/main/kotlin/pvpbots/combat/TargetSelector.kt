@@ -16,4 +16,8 @@ object TargetSelector {
         if (peel.isNotEmpty()) return peel.minByOrNull { dist(it) }?.id
         return hostiles.sortedWith(compareByDescending<MobView> { it.maxHealth }.thenBy { dist(it) }).firstOrNull()?.id
     }
+
+    /** The nearest enemy of a team round for which [reachable] holds; null when there is none. */
+    fun pickTeamTarget(botPos: Vec3, enemies: Map<UUID, Vec3>, reachable: (UUID) -> Boolean): UUID? =
+        enemies.filterKeys(reachable).minByOrNull { (_, pos) -> (pos - botPos).length() }?.key
 }

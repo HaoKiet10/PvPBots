@@ -137,6 +137,7 @@ class SelfTest(
                 with(ArenaSelfTest(this@SelfTest, plugin, world)) { run() }
                 with(KitSelfTest(this@SelfTest, plugin, world)) { run() }
                 with(SkillSelfTest(this@SelfTest, plugin, world)) { run() }
+                with(TeamSelfTest(this@SelfTest, plugin, world)) { run() }
             }
             Mode.Trainer -> trainerChecks()
             Mode.Ally -> allyChecks()

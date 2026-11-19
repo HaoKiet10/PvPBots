@@ -6,6 +6,7 @@ import org.bukkit.scheduler.BukkitTask
 import pvpbots.adapter.AdapterLoader
 import pvpbots.adapter.BotAdapter
 import pvpbots.arena.ArenaRecord
+import pvpbots.team.Side
 import pvpbots.session.AreaDirector
 import pvpbots.session.AreaRef
 import pvpbots.session.SessionKey
@@ -83,7 +84,10 @@ class PvpBotsPlugin : JavaPlugin() {
         registry.warnings.forEach { logger.severe("arenas: $it") }
         arenaService = ArenaService(this, registry, File(dataFolder, "arenas"))
         botManager.arenaPads = { name -> arenaService.registry.get(name)?.padsB }
+        botManager.teamPads = { name, side -> arenaService.registry.get(name)?.let { if (side == Side.A) it.padsA else it.padsB } }
         kitArenas = KitArenaService(this, File(dataFolder, "stash"))
+        // Each team round in a kit arena: the players get a fresh kit when they are placed on their pads.
+        botManager.playerPlaced = { p, area -> if (area.kit != null) kitArenas.refill(p.uniqueId) }
         arenaService.onArenaRelease = { name -> kitArenas.releaseArena(name) }
         // Each new round in a kit arena: the owner gets a fresh kit when their trainer spawns.
         botManager.spawnListeners += { r ->

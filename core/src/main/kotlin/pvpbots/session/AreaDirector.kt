@@ -1,6 +1,7 @@
 package pvpbots.session
 
 import pvpbots.slots.BotSlots
+import pvpbots.team.Side
 import pvpbots.team.TeamRound
 import java.util.UUID
 
@@ -199,6 +200,19 @@ class AreaDirector(
 
     /** Granted spawns waiting for their turn (rate limit) or for a dead owner to respawn, for status output. */
     fun pendingSpawns(): Int = pending.size + held.values.sumOf { it.size }
+
+    /** (arena = region id, side) of a player or bot seated in a running team round; null for anyone else. Read-only. */
+    fun teamSideOf(id: UUID): Pair<String, Side>? {
+        for ((k, r) in teams) r.sideOf(id)?.let { return k.regionId to it }
+        return null
+    }
+
+    /** Everyone the team-round bot [botId] may fight: the other side's players in the arena and live bots. */
+    fun teamFoes(botId: UUID): List<UUID> {
+        val key = alive[botId] as? SessionKey.Team ?: return emptyList()
+        val r = teams[key] ?: return emptyList()
+        return r.sideOf(botId)?.let { r.foesOf(it) }.orEmpty()
+    }
 
     fun fighting(botId: UUID): Boolean = when (val key = alive[botId]) {
         is SessionKey.Squad -> true

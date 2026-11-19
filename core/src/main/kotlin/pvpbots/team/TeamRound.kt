@@ -64,6 +64,21 @@ class TeamRound(val key: SessionKey.Team, area: AreaRef, private val t: Timings)
     fun waiting(): List<UUID> = waiting.toList()
     fun aliveBots(): List<UUID> = bots.values.flatten()
 
+    /** The side of a seated player still in the arena, or of a live filler bot; null for anyone else. */
+    fun sideOf(id: UUID): Side? {
+        if (state == State.ENDED) return null
+        for (side in Side.entries) {
+            if (id in bots.getValue(side) || (id in inArena && id in team.getValue(side))) return side
+        }
+        return null
+    }
+
+    /** Everyone (players in the arena, live bots) on the side opposing [side]. */
+    fun foesOf(side: Side): List<UUID> {
+        val other = if (side == Side.A) Side.B else Side.A
+        return team.getValue(other).filter { it in inArena } + bots.getValue(other)
+    }
+
     /** Players the next round would seat: those still in the arena plus the ones waiting. */
     fun players(): List<UUID> = (inArena + waiting).distinct()
 

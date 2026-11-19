@@ -4,7 +4,9 @@ import pvpbots.combat.Party.Ally
 import pvpbots.combat.Party.Mob
 import pvpbots.combat.Party.Other
 import pvpbots.combat.Party.RealPlayer
+import pvpbots.combat.Party.TeamBot
 import pvpbots.combat.Party.Trainer
+import pvpbots.team.Side
 import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertFalse
@@ -15,34 +17,87 @@ class DamagePolicyTest {
     private val owner = UUID(3, 2)
     private val other = UUID(3, 3)
 
+    private val none: (UUID) -> Pair<String, Side>? = { null }
+
+    private fun allow(a: Party, v: Party, sideOf: (UUID) -> Pair<String, Side>? = none): Boolean =
+        DamagePolicy.allow(a, v, sideOf) { null }
+
     @Test
     fun trainerOnlyFightsOwner() {
-        assertTrue(DamagePolicy.allow(Trainer(bot, owner), RealPlayer(owner)))
-        assertTrue(DamagePolicy.allow(RealPlayer(owner), Trainer(bot, owner)))
-        assertFalse(DamagePolicy.allow(Trainer(bot, owner), RealPlayer(other)))
-        assertFalse(DamagePolicy.allow(RealPlayer(other), Trainer(bot, owner)))
-        assertFalse(DamagePolicy.allow(Mob, Trainer(bot, owner)))
-        assertFalse(DamagePolicy.allow(Trainer(bot, owner), Mob))
-        assertFalse(DamagePolicy.allow(Ally(UUID(3, 4)), Trainer(bot, owner)))
-        assertFalse(DamagePolicy.allow(Trainer(bot, owner), Ally(UUID(3, 4))))
-        assertFalse(DamagePolicy.allow(Trainer(bot, owner), Trainer(UUID(3, 5), other)))
-        assertFalse(DamagePolicy.allow(Other, Trainer(bot, owner)))
+        assertTrue(allow(Trainer(bot, owner), RealPlayer(owner)))
+        assertTrue(allow(RealPlayer(owner), Trainer(bot, owner)))
+        assertFalse(allow(Trainer(bot, owner), RealPlayer(other)))
+        assertFalse(allow(RealPlayer(other), Trainer(bot, owner)))
+        assertFalse(allow(Mob, Trainer(bot, owner)))
+        assertFalse(allow(Trainer(bot, owner), Mob))
+        assertFalse(allow(Ally(UUID(3, 4)), Trainer(bot, owner)))
+        assertFalse(allow(Trainer(bot, owner), Ally(UUID(3, 4))))
+        assertFalse(allow(Trainer(bot, owner), Trainer(UUID(3, 5), other)))
+        assertFalse(allow(Other, Trainer(bot, owner)))
     }
 
     @Test
     fun alliesNeverHurtPlayers() {
-        assertFalse(DamagePolicy.allow(Ally(bot), RealPlayer(other)))
-        assertFalse(DamagePolicy.allow(RealPlayer(other), Ally(bot)))
-        assertFalse(DamagePolicy.allow(Ally(bot), Ally(UUID(3, 4))))
-        assertTrue(DamagePolicy.allow(Mob, Ally(bot)))
-        assertTrue(DamagePolicy.allow(Ally(bot), Mob))
+        assertFalse(allow(Ally(bot), RealPlayer(other)))
+        assertFalse(allow(RealPlayer(other), Ally(bot)))
+        assertFalse(allow(Ally(bot), Ally(UUID(3, 4))))
+        assertTrue(allow(Mob, Ally(bot)))
+        assertTrue(allow(Ally(bot), Mob))
     }
 
     @Test
     fun everythingElseAllowed() {
-        assertTrue(DamagePolicy.allow(RealPlayer(owner), RealPlayer(other)))
-        assertTrue(DamagePolicy.allow(Mob, RealPlayer(other)))
-        assertTrue(DamagePolicy.allow(RealPlayer(other), Mob))
-        assertTrue(DamagePolicy.allow(Other, RealPlayer(other)))
+        assertTrue(allow(RealPlayer(owner), RealPlayer(other)))
+        assertTrue(allow(Mob, RealPlayer(other)))
+        assertTrue(allow(RealPlayer(other), Mob))
+        assertTrue(allow(Other, RealPlayer(other)))
+    }
+
+    private val b1 = UUID(3, 10)
+    private val b2 = UUID(3, 11)
+    private val b3 = UUID(3, 12)
+    private val p1 = UUID(3, 20)
+    private val p2 = UUID(3, 21)
+    private val p3 = UUID(3, 22)
+    private val outsider = UUID(3, 23)
+    private val sides = mapOf(
+        p1 to ("arena" to Side.A), p2 to ("arena" to Side.A), p3 to ("arena" to Side.B),
+        b1 to ("arena" to Side.A), b2 to ("arena" to Side.B),
+    )
+    private val sideOf: (UUID) -> Pair<String, Side>? = { sides[it] }
+
+    @Test
+    fun teamBots_noFriendlyFire() {
+        val a1 = TeamBot(b1, "arena", Side.A)
+        val a2 = TeamBot(UUID(3, 13), "arena", Side.A)
+        val bb = TeamBot(b2, "arena", Side.B)
+        assertFalse(allow(a1, a2, sideOf))
+        assertTrue(allow(a1, bb, sideOf))
+        assertTrue(allow(bb, a1, sideOf))
+        assertFalse(allow(a1, RealPlayer(p1), sideOf)) // teammate player
+        assertFalse(allow(RealPlayer(p1), a1, sideOf))
+        assertTrue(allow(a1, RealPlayer(p3), sideOf)) // enemy player
+        assertTrue(allow(RealPlayer(p3), a1, sideOf))
+        assertFalse(allow(RealPlayer(p1), RealPlayer(p2), sideOf)) // player <-> teammate player
+        assertTrue(allow(RealPlayer(p1), RealPlayer(p3), sideOf)) // player <-> enemy player in a team round
+    }
+
+    @Test
+    fun teamBot_neverHitsOutsiders() {
+        val a1 = TeamBot(b1, "arena", Side.A)
+        val other = TeamBot(b3, "elsewhere", Side.B)
+        assertFalse(allow(a1, RealPlayer(outsider), sideOf))
+        assertFalse(allow(RealPlayer(outsider), a1, sideOf))
+        assertFalse(allow(a1, other, sideOf)) // another arena
+        assertFalse(allow(a1, Mob, sideOf))
+        assertFalse(allow(Mob, a1, sideOf))
+        assertFalse(allow(a1, Trainer(bot, owner), sideOf))
+        assertFalse(allow(Ally(bot), a1, sideOf))
+        assertFalse(allow(a1, Other, sideOf))
+        // a seated player is protected from, and cannot hit, outsiders
+        assertFalse(allow(RealPlayer(p3), RealPlayer(outsider), sideOf))
+        assertFalse(allow(RealPlayer(outsider), RealPlayer(p3), sideOf))
+        // outside team rounds nothing changes
+        assertTrue(allow(RealPlayer(outsider), RealPlayer(UUID(3, 24)), sideOf))
     }
 }

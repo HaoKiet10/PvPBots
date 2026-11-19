@@ -15,6 +15,7 @@ import pvpbots.adapter.BotHandle
 import pvpbots.adapter.BotSpec
 import pvpbots.math.Aim
 import pvpbots.math.BlockPos
+import pvpbots.math.Rotation
 import pvpbots.math.Vec3
 import pvpbots.path.SpawnPointFinder
 import pvpbots.profile.Difficulty
@@ -29,6 +30,7 @@ import pvpbots.skill.FightJudge
 import pvpbots.skill.Outcome
 import pvpbots.skill.RatingUpdate
 import pvpbots.skill.SkillBlender
+import pvpbots.team.Side
 import java.util.UUID
 import java.util.logging.Level
 import java.util.logging.Logger
@@ -41,6 +43,8 @@ data class BotRecord(
     val profile: DifficultyProfile,
     val area: AreaRef,
     val controller: BotController,
+    /** The side a team-round filler fights for; null for every other bot. */
+    val side: Side? = null,
 ) {
     val id: UUID get() = handle.id
     val player: Player get() = handle.bukkit
@@ -66,6 +70,12 @@ class BotManager(
 
     /** B pads (trainer spawn pads) of a plugin-built arena by name; set by the plugin. */
     var arenaPads: (String) -> List<BlockPos>? = { null }
+
+    /** Pads (standing blocks' floor) of one side of a plugin-built arena by name; set by the plugin. */
+    var teamPads: (String, Side) -> List<BlockPos>? = { _, _ -> null }
+
+    /** Told after [placePlayer] moved a player in a team round (kit arenas hand out a fresh kit here); set by the plugin. */
+    var playerPlaced: (Player, AreaRef) -> Unit = { _, _ -> }
 
     /** Test hook: told about every bot right after it is registered. */
     var spawnObserver: ((BotRecord) -> Unit)? = null
@@ -150,28 +160,7 @@ class BotManager(
                 // In a kit arena (§5.6) the bot fights in the arena's kit whatever its difficulty.
                 area.kit?.let { base.copy(kit = it) } ?: base
             }
-            val skin = config.skins.pick(rng)
-            val id = UUID.randomUUID()
-            val handle = BotProfiler.spawnPart(BotProfiler.SpawnPart.ADAPTER) { adapter.spawn(BotSpec(nameFor(role, id), id, skin?.value, skin?.signature), at) }
-            try {
-                BotProfiler.spawnPart(BotProfiler.SpawnPart.KIT) { config.kits.apply(handle.bukkit, profile.kit, profile, kitArena = area.kit != null) }
-                BotProfiler.spawnPart(BotProfiler.SpawnPart.DISTANCES) { applyDistances(handle.bukkit) }
-                val controller = BotController(this, handle, key, role, profile, area, facing)
-                val record = BotRecord(handle, key, role, profile, area, controller)
-                bots[handle.id] = record
-                if (adaptiveOwner != null && rating != null) trackers[adaptiveOwner] = FightTracker(adaptiveOwner, handle.id, rating)
-                spawnObserver?.invoke(record)
-                for (l in spawnListeners) TickIsolation.guard({ l(record) }) { e -> logFailure(e, "Spawn listener failed for bot ${handle.id}", Level.SEVERE) }
-                return handle.id
-            } catch (e: VirtualMachineError) {
-                throw e
-            } catch (e: Throwable) {
-                // The entity exists but the bot is unusable: never leave it in the world outside the registry.
-                bots.remove(handle.id)
-                trackers.values.removeIf { it.botId == handle.id }
-                TickIsolation.guard({ adapter.remove(handle) }) { r -> e.addSuppressed(r) }
-                throw e
-            }
+            return registerBot(key, role, profile, area, at, facing, null, adaptiveOwner, rating)
         } catch (e: VirtualMachineError) {
             throw e
         } catch (e: Throwable) {
@@ -179,6 +168,94 @@ class BotManager(
             return null
         }
     }
+
+    /** Creates the entity at [at], kits it and registers it; the adaptive tracker (v2 1v1 trainers only) is set when [adaptiveOwner] is given. */
+    private fun registerBot(
+        key: SessionKey, role: Role, profile: DifficultyProfile, area: AreaRef, at: Location, facing: Rotation,
+        side: Side?, adaptiveOwner: UUID?, rating: Double?,
+    ): UUID {
+        val skin = config.skins.pick(rng)
+        val id = UUID.randomUUID()
+        val handle = BotProfiler.spawnPart(BotProfiler.SpawnPart.ADAPTER) { adapter.spawn(BotSpec(nameFor(role, id), id, skin?.value, skin?.signature), at) }
+        try {
+            BotProfiler.spawnPart(BotProfiler.SpawnPart.KIT) { config.kits.apply(handle.bukkit, profile.kit, profile, kitArena = area.kit != null) }
+            BotProfiler.spawnPart(BotProfiler.SpawnPart.DISTANCES) { applyDistances(handle.bukkit) }
+            val controller = BotController(this, handle, key, role, profile, area, facing)
+            val record = BotRecord(handle, key, role, profile, area, controller, side)
+            bots[handle.id] = record
+            if (adaptiveOwner != null && rating != null) trackers[adaptiveOwner] = FightTracker(adaptiveOwner, handle.id, rating)
+            spawnObserver?.invoke(record)
+            for (l in spawnListeners) TickIsolation.guard({ l(record) }) { e -> logFailure(e, "Spawn listener failed for bot ${handle.id}", Level.SEVERE) }
+            return handle.id
+        } catch (e: VirtualMachineError) {
+            throw e
+        } catch (e: Throwable) {
+            // The entity exists but the bot is unusable: never leave it in the world outside the registry.
+            bots.remove(handle.id)
+            trackers.values.removeIf { it.botId == handle.id }
+            TickIsolation.guard({ adapter.remove(handle) }) { r -> e.addSuppressed(r) }
+            throw e
+        }
+    }
+
+    /** The pad block of [side] number [pad] in the arena named by [area], as a standing position (pad + 1 up), or null. */
+    private fun padStand(area: AreaRef, side: Side, pad: Int): BlockPos? {
+        val pads = area.arena?.let { teamPads(it, side) }?.takeIf { it.isNotEmpty() } ?: return null
+        val p = pads[pad.coerceAtLeast(0) % pads.size]
+        return BlockPos(p.x, p.y + 1, p.z)
+    }
+
+    private fun arenaCentre(area: AreaRef): Vec3 {
+        val b = area.bounds
+        return Vec3((b.min.x + b.max.x + 1) / 2.0, b.min.y.toDouble(), (b.min.z + b.max.z + 1) / 2.0)
+    }
+
+    override fun spawnTeamBot(key: SessionKey.Team, side: Side, rating: Double, area: AreaRef, pad: Int): UUID? {
+        val start = System.nanoTime()
+        try {
+            val world = Bukkit.getWorld(area.world) ?: return null.also { logger.warning("Team bot spawn: world ${area.world} is not loaded") }
+            val stand = padStand(area, side, pad)
+            if (stand == null) {
+                logger.warning("Team bot spawn: no pad $pad for side $side in arena ${area.arena} (region ${area.regionId})")
+                return null
+            }
+            val centre = arenaCentre(area)
+            val eye = Vec3(stand.x + 0.5, stand.y + EYE_HEIGHT, stand.z + 0.5)
+            val facing = Aim.lookAt(eye, Vec3(centre.x, eye.y, centre.z))
+            val at = Location(world, stand.x + 0.5, stand.y.toDouble(), stand.z + 0.5, facing.yaw, facing.pitch)
+            val profile = SkillBlender.startProfile(rating, config.profiles, area.kit)
+            return registerBot(key, Role.TRAINER, profile, area, at, facing, side, null, null)
+        } catch (e: VirtualMachineError) {
+            throw e
+        } catch (e: Throwable) {
+            logFailure(e, "Team bot spawn failed for $key in ${area.world}/${area.regionId}")
+            return null
+        } finally {
+            spawnNanos += System.nanoTime() - start
+        }
+    }
+
+    override fun placePlayer(player: UUID, area: AreaRef, side: Side, pad: Int) {
+        val p = Bukkit.getEntity(player) as? Player ?: return
+        val world = Bukkit.getWorld(area.world) ?: return
+        val stand = padStand(area, side, pad) ?: return
+        val centre = arenaCentre(area)
+        val look = Aim.lookAt(Vec3(stand.x + 0.5, stand.y + EYE_HEIGHT, stand.z + 0.5), Vec3(centre.x, stand.y + EYE_HEIGHT, centre.z))
+        p.teleport(Location(world, stand.x + 0.5, stand.y.toDouble(), stand.z + 0.5, look.yaw, look.pitch))
+        p.velocity = org.bukkit.util.Vector(0, 0, 0)
+        p.fallDistance = 0f
+        playerPlaced(p, area)
+    }
+
+    /** Adds the result of a team round to the stored rating: `RatingUpdate.after(old, old, outcome)`. Offline players are skipped. */
+    override fun teamResult(player: UUID, outcome: Outcome) {
+        val p = Bukkit.getEntity(player) as? Player ?: return
+        val old = skillStore.get(p)
+        skillStore.set(p, RatingUpdate.after(old, old, outcome, config.settings.skill))
+    }
+
+    override fun rating(player: UUID): Double =
+        (Bukkit.getEntity(player) as? Player)?.let(skillStore::get) ?: config.settings.skill.startRating
 
     /** Standing position on the B pad nearest [near] with no bot within 1 block, or null (no pads / all taken). */
     private fun freePad(arena: String, world: org.bukkit.World, near: Location): BlockPos? {

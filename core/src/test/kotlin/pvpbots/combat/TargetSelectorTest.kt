@@ -69,4 +69,17 @@ class TargetSelectorTest {
     fun noHostiles_null() {
         assertNull(TargetSelector.pickAllyTarget(at(0.0, 0.0, 0.0), emptyList(), emptyMap()))
     }
+
+    @Test
+    fun pickTeamTarget_nearestReachableEnemy() {
+        val near = UUID(4, 1)
+        val far = UUID(4, 2)
+        val cut = UUID(4, 3)
+        val enemies = mapOf(near to at(2.0, 0.0, 0.0), far to at(9.0, 0.0, 0.0), cut to at(1.0, 0.0, 0.0))
+        assertEquals(cut, TargetSelector.pickTeamTarget(at(0.0, 0.0, 0.0), enemies) { true })
+        assertEquals(near, TargetSelector.pickTeamTarget(at(0.0, 0.0, 0.0), enemies) { it != cut })
+        assertEquals(far, TargetSelector.pickTeamTarget(at(0.0, 0.0, 0.0), enemies) { it == far })
+        assertNull(TargetSelector.pickTeamTarget(at(0.0, 0.0, 0.0), enemies) { false })
+        assertNull(TargetSelector.pickTeamTarget(at(0.0, 0.0, 0.0), emptyMap()) { true })
+    }
 }

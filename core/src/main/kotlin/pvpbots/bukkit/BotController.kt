@@ -17,6 +17,7 @@ import pvpbots.combat.Intent
 import pvpbots.combat.MoveStyle
 import pvpbots.combat.Perception
 import pvpbots.combat.RefreshClock
+import pvpbots.combat.TargetSelector
 import pvpbots.combat.TargetView
 import pvpbots.combat.TrainerBrain
 import pvpbots.math.Aim
@@ -166,7 +167,7 @@ class BotController(
         target = when (val k = key) {
             is SessionKey.Trainer -> PerceptionBuilder.livingTarget(bot, k.owner)
             is SessionKey.Squad -> BotProfiler.timed(Phase.SCAN) { PerceptionBuilder.allyTarget(bot, area.bounds, isBot) }
-            is SessionKey.Team -> null // wired with team rounds (v3)
+            is SessionKey.Team -> teamTarget(bot)
         }
         targetView = target?.let(PerceptionBuilder::targetView)
         followPos = if (role == Role.ALLY) PerceptionBuilder.followPos(bot, area.bounds, isBot) else null
@@ -178,6 +179,15 @@ class BotController(
                 BotProfiler.timed(Phase.REACHABLE) { reachCheck.record(tick, tv.id, pos, tv.pos, reachableOnFoot(pos, tv.pos, tick)) }
             }
         }
+    }
+
+    /** The nearest enemy of the other side in the round: a player or a filler bot, standing inside the arena (the reachable ones). */
+    private fun teamTarget(bot: org.bukkit.entity.Player): LivingEntity? {
+        val foes = manager.director.teamFoes(handle.id).mapNotNull { id -> PerceptionBuilder.livingTarget(bot, id) }
+        if (foes.isEmpty()) return null
+        val pos = foes.associate { it.uniqueId to vec(it.location) }
+        val id = TargetSelector.pickTeamTarget(vec(bot.location), pos) { area.bounds.contains(pos.getValue(it)) } ?: return null
+        return foes.firstOrNull { it.uniqueId == id }
     }
 
     /**
