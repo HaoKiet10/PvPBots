@@ -431,6 +431,7 @@ class AreaDirectorTest {
         assertEquals(0, slots.queued())
         assertTrue(port.teamResults.isEmpty())
         assertEquals(listOf(Messages.TEAM_UNAVAILABLE), port.actionBars[P1]?.filter { it == Messages.TEAM_UNAVAILABLE })
+        assertEquals(listOf(Messages.TEAM_UNAVAILABLE), port.actionBars[P2]?.filter { it == Messages.TEAM_UNAVAILABLE })
         val calls = port.spawnCalls
         repeat(3) { t += 5_000; d.tick(t) }
         assertEquals(calls, port.spawnCalls)
