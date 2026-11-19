@@ -79,6 +79,18 @@ class TrainerSession(private val owner: UUID, area: AreaRef, private val t: Timi
         return out
     }
 
+    /**
+     * A second player joined this team arena: the duel ends for good. Removes the bot, cancels slot requests and
+     * reports [Outcome.NO_RESULT] when a round was in progress. No title, no rematch.
+     */
+    fun endForTeam(): List<Effect> {
+        if (state == State.ENDED) return emptyList()
+        val inRound = state == State.QUEUED || state == State.COUNTDOWN || state == State.FIGHTING
+        val out = ownerLeft().toMutableList()
+        if (inRound) out += Effect.RoundEnded(owner, Outcome.NO_RESULT)
+        return out
+    }
+
     fun ownerDied(nowMs: Long): List<Effect> = endRound(nowMs, Messages.TRAINER_WON, Outcome.BOT_WON)
 
     fun botDied(nowMs: Long): List<Effect> = endRound(nowMs, Messages.YOU_WON, Outcome.PLAYER_WON)

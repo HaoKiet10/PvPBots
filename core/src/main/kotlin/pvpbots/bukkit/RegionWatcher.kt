@@ -124,7 +124,10 @@ class RegionWatcher(private val plugin: JavaPlugin, private val events: Events) 
                 kit = arena?.kit,
             )
         }
-        return AreaResolver.resolve(infos, events.maxBots())
+        val area = AreaResolver.resolve(infos, events.maxBots()) ?: return null
+        // Squad/team built arenas seat several players per side; duels and hand-drawn regions keep seats = null.
+        val seats = events.arena(area.regionId)?.takeIf { it.world == world }?.preset?.padsPerSide?.takeIf { it > 1 }
+        return if (seats != null) area.copy(seats = seats) else area
     }
 
     private fun worldName(l: WeLocation): String? = (l.extent as? com.sk89q.worldedit.world.World)?.name

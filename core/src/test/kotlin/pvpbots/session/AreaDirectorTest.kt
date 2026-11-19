@@ -337,4 +337,109 @@ class AreaDirectorTest {
         assertEquals(0, d.trainerCount())
         assertEquals(0, d.squadCount())
     }
+
+    // ---- team arenas (v3) ----
+
+    private val TEAM = AreaRef(W, "team", Role.TRAINER, Difficulty.MEDIUM, 1, B, seats = 2)
+
+    /** Two players in the team arena, fillers spawned, fight started (3 s countdown passed). */
+    private fun fightingTeam(): List<FakeBotPort.TeamSpawn> {
+        director(10)
+        enter(P1, TEAM); enter(P2, TEAM)
+        d.tick(100)
+        d.tick(3200)
+        return port.teamSpawns.toList()
+    }
+
+    @Test fun onePlayerInTeamArena_getsTrainer() {
+        director(10)
+        enter(P1, TEAM)
+        assertNotNull(d.trainerFor(P1))
+        assertEquals(1, port.spawned.size)
+        assertEquals(SessionKey.Trainer(P1), port.spawned[0].key)
+        assertTrue(port.teamSpawns.isEmpty())
+    }
+
+    @Test fun secondPlayerEnters_trainerEndsNoResult_teamRoundStarts() {
+        director(10)
+        enter(P1, TEAM)
+        val trainerBot = port.spawned[0].botId
+        enter(P2, TEAM, 1000)
+        assertEquals(listOf(P1 to pvpbots.skill.Outcome.NO_RESULT), port.roundEnds)
+        assertTrue(trainerBot in port.removed)
+        assertNull(d.trainerFor(P1))
+        assertNull(d.trainerFor(P2))
+        assertEquals(2, port.teamSpawns.size)
+        assertTrue(port.teamSpawns.all { it.key == SessionKey.Team(W, "team") })
+        assertEquals(2, slots.used()) // the trainer's slot was released, two filler slots held
+        assertEquals(1, d.teamCount())
+    }
+
+    @Test fun teamRoundDropsToOne_nextRoundIsTrainer() {
+        val bots = fightingTeam()
+        d.onAreaChange(P2, TEAM, null, 4000)
+        bots.forEach { d.onBotDeath(it.botId, 4100) }
+        assertEquals(listOf(P1 to pvpbots.skill.Outcome.PLAYER_WON), port.teamResults)
+        assertNull(d.trainerFor(P1))
+        d.tick(9200)
+        assertNotNull(d.trainerFor(P1))
+        assertEquals(0, d.teamCount())
+        assertTrue(port.spawned.last().key == SessionKey.Trainer(P1))
+        assertEquals(1, slots.used())
+    }
+
+    @Test fun shutdown_duringTeamRound_noResults() {
+        fightingTeam()
+        assertEquals(2, slots.used())
+        d.shutdown()
+        assertTrue(port.teamResults.isEmpty())
+        assertTrue(port.alive.isEmpty())
+        assertEquals(0, slots.used())
+    }
+
+    @Test fun teamBotDeath_routedToRound() {
+        val bots = fightingTeam()
+        val a = bots.first { it.side == pvpbots.team.Side.A }
+        d.onBotDeath(a.botId, 4000)
+        assertTrue(port.teamResults.isEmpty())
+        d.onPlayerDeath(P1, 4100) // side A has no one left; side B still has its bot
+        assertEquals(
+            setOf(P1 to pvpbots.skill.Outcome.BOT_WON, P2 to pvpbots.skill.Outcome.PLAYER_WON),
+            port.teamResults.toSet(),
+        )
+        assertEquals(0, slots.used())
+    }
+
+    @Test fun teamBotFailed_routedToRound() {
+        val bots = fightingTeam()
+        val a = bots.first { it.side == pvpbots.team.Side.A }
+        d.onBotFailed(a.botId, 4000)
+        assertTrue(a.botId in port.removed)
+        d.onPlayerDeath(P1, 4100)
+        assertEquals(2, port.teamResults.size)
+        assertEquals(0, slots.used())
+    }
+
+    @Test fun teamSpawnFailures_abortRoundAfterMaxFailures_noLeak() {
+        director(10)
+        port.failAllSpawns = true
+        enter(P1, TEAM); enter(P2, TEAM)
+        var t = 0L
+        repeat(6) { t += 5_000; d.tick(t) }
+        assertEquals(0, d.teamCount())
+        assertEquals(0, slots.used())
+        assertEquals(0, slots.queued())
+        assertTrue(port.teamResults.isEmpty())
+        val calls = port.spawnCalls
+        repeat(3) { t += 5_000; d.tick(t) }
+        assertEquals(calls, port.spawnCalls)
+    }
+
+    @Test fun teamArena_playersPlacedAndRatingsUsed() {
+        director(10)
+        port.ratings[P1] = 70.0
+        enter(P1, TEAM); enter(P2, TEAM)
+        d.tick(100)
+        assertEquals(setOf(P1, P2), port.placements.map { it.first }.toSet())
+    }
 }

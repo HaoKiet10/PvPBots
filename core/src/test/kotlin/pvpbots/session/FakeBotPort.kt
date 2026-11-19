@@ -1,6 +1,8 @@
 package pvpbots.session
 
 import pvpbots.profile.Difficulty
+import pvpbots.skill.Outcome
+import pvpbots.team.Side
 import java.util.UUID
 
 /** Records every [BotPort] call. Spawned bot ids are deterministic (0x100 + n). */
@@ -22,6 +24,11 @@ class FakeBotPort : BotPort {
     /** Players [isDead] reports as dead. */
     val deadPlayers = mutableSetOf<UUID>()
     val roundEnds = mutableListOf<Pair<UUID, pvpbots.skill.Outcome>>()
+    data class TeamSpawn(val key: SessionKey.Team, val side: Side, val rating: Double, val pad: Int, val botId: UUID)
+    val teamSpawns = mutableListOf<TeamSpawn>()
+    val placements = mutableListOf<Triple<UUID, Side, Int>>()
+    val teamResults = mutableListOf<Pair<UUID, Outcome>>()
+    val ratings = mutableMapOf<UUID, Double>()
     var spawnCalls = 0
     var onSpawn: ((Spawn) -> Unit)? = null
     private var counter = 0
@@ -47,6 +54,25 @@ class FakeBotPort : BotPort {
         onSpawn?.invoke(s)
         return id
     }
+
+    override fun spawnTeamBot(key: SessionKey.Team, side: Side, rating: Double, area: AreaRef, pad: Int): UUID? {
+        spawnCalls++
+        if (failAllSpawns) return null
+        val id = UUID(0, 0x100L + counter++)
+        teamSpawns += TeamSpawn(key, side, rating, pad, id)
+        spawned += Spawn(key, Role.TEAM, null, area, UUID(0, 0), id)
+        return id
+    }
+
+    override fun placePlayer(player: UUID, area: AreaRef, side: Side, pad: Int) {
+        placements += Triple(player, side, pad)
+    }
+
+    override fun teamResult(player: UUID, outcome: Outcome) {
+        teamResults += player to outcome
+    }
+
+    override fun rating(player: UUID) = ratings[player] ?: 50.0
 
     override fun remove(botId: UUID) {
         removed += botId
