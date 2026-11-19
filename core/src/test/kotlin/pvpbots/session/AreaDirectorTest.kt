@@ -430,6 +430,7 @@ class AreaDirectorTest {
         assertEquals(0, slots.used())
         assertEquals(0, slots.queued())
         assertTrue(port.teamResults.isEmpty())
+        assertEquals(listOf(Messages.TEAM_UNAVAILABLE), port.actionBars[P1]?.filter { it == Messages.TEAM_UNAVAILABLE })
         val calls = port.spawnCalls
         repeat(3) { t += 5_000; d.tick(t) }
         assertEquals(calls, port.spawnCalls)
@@ -441,5 +442,17 @@ class AreaDirectorTest {
         enter(P1, TEAM); enter(P2, TEAM)
         d.tick(100)
         assertEquals(setOf(P1, P2), port.placements.map { it.first }.toSet())
+    }
+
+    @Test fun teamRoleRegion_startsNothing_leavesNothing() {
+        director(10)
+        val teamRole = TEAM.copy(role = Role.TEAM)
+        enter(P1, teamRole)
+        assertNull(d.trainerFor(P1))
+        assertTrue(port.spawned.isEmpty())
+        d.onAreaChange(P1, teamRole, null, 1000)
+        d.tick(1000)
+        assertEquals(0, slots.used())
+        assertEquals(0, d.teamCount())
     }
 }

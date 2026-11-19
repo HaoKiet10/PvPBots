@@ -23,7 +23,7 @@ import java.util.UUID
  * refilling the failing slot; a team round is dropped with no result (bots removed, slots released) and its players get no
  * session until they re-enter the region.
  *
- * Team arenas (an area with `seats != null`, role TRAINER/TEAM): the first player gets a [TrainerSession]; when a second
+ * Team arenas (an area with `seats != null`, role TRAINER; TEAM and BOSS regions start nothing): the first player gets a [TrainerSession]; when a second
  * enters, that duel ends with NO_RESULT and a [TeamRound] takes over. A round that ends with one player left hands that
  * player back to a trainer session.
  */
@@ -209,7 +209,7 @@ class AreaDirector(
 
     // ---- area transitions ----
 
-    private fun isTeamArena(a: AreaRef) = a.seats != null && (a.role == Role.TRAINER || a.role == Role.TEAM)
+    private fun isTeamArena(a: AreaRef) = a.seats != null && a.role == Role.TRAINER
 
     private fun teamKey(a: AreaRef) = SessionKey.Team(a.world, a.regionId)
 
@@ -305,7 +305,8 @@ class AreaDirector(
         val r = teams.remove(key) ?: return emptyList()
         log("Team round at ${key.world}/${key.regionId} dropped after $n consecutive bot failures; it starts again when a player re-enters the region", null)
         forget(key)
-        return listOf<Effect>(Effect.CancelSlotRequests(key)) + r.aliveBots().map { Effect.RemoveBot(it) }
+        return listOf<Effect>(Effect.CancelSlotRequests(key)) + r.aliveBots().map { Effect.RemoveBot(it) } +
+            r.players().map { Effect.ActionBar(it, Messages.TEAM_UNAVAILABLE) }
     }
 
     private fun enter(player: UUID, to: AreaRef, nowMs: Long) {

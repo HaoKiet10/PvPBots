@@ -32,5 +32,6 @@ object Messages {
     const val DRAW = "Time's up \u2014 draw"
     const val TEAM_WON = "Your team won!"
     const val TEAM_LOST = "Your team lost"
+    const val TEAM_UNAVAILABLE = "Team round unavailable — re-enter to retry"
     const val WAIT = "Next round starts soon"
 }
