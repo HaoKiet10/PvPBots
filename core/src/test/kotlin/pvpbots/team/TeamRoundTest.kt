@@ -102,7 +102,7 @@ class TeamRoundTest {
         val (r, bots) = fighting()
         bots.getValue(Side.B).forEach { r.botDied(it, 5000) }
         val fx = r.playerLeft(p2, 6000)
-        assertTrue(Effect.TeamResult(p2, Outcome.BOT_WON) in fx)
+        assertTrue(fx.none { it is Effect.TeamResult && it.player == p2 })
         assertTrue(Effect.TeamResult(p1, Outcome.PLAYER_WON) in fx)
         assertTrue(Effect.Title(p1, Messages.TEAM_WON) in fx)
         assertTrue(fx.none { it is Effect.Title && it.player == p2 })
@@ -156,6 +156,24 @@ class TeamRoundTest {
         val (r, _) = fighting()
         r.playerDied(p2, 4000)
         assertEquals(listOf<Effect>(Effect.Wait(p2)), r.playerEntered(p2, 40.0, 5000))
+    }
+
+    @Test fun entrantDuringRematchWait_getsWait() {
+        val (r, bots) = fighting()
+        bots.getValue(Side.B).forEach { r.botDied(it, 5000) }
+        r.playerDied(p2, 5000)
+        assertEquals(REMATCH_WAIT, r.state())
+        assertEquals(listOf<Effect>(Effect.Wait(id(3))), r.playerEntered(id(3), 10.0, 6000))
+    }
+
+    @Test fun allPlayersDieDuringCountdown_noResult() {
+        val r = round()
+        val bots = counting(r)
+        r.playerDied(p1, 1000)
+        val fx = r.playerDied(p2, 1500)
+        assertTrue(fx.none { it is Effect.TeamResult })
+        (bots.getValue(Side.A) + bots.getValue(Side.B)).forEach { assertTrue(Effect.RemoveBot(it) in fx) }
+        assertEquals(ENDED, r.state())
     }
 
     @Test fun overflowPlayers_waitAtStart() {

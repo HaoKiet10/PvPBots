@@ -23,8 +23,8 @@ import java.util.UUID
  *    mid-round waits for the next round ([Effect.Wait]); players who waited are seated first.
  *  - [tick]: drives countdown, time limit, slot shrinking and the rematch delay.
  *
- * Results: when a round that reached FIGHTING ends, every seated player (also one who died or left) gets
- * [Effect.TeamResult]; players still online get a title. A round that never fought, or whose players all left,
+ * Results: when a round that reached FIGHTING ends, every seated player who did not leave (dead ones included) gets
+ * [Effect.TeamResult]; players still online get a title. Leavers get no result. A round that never fought, or whose players all left,
  * ends with no result. When fewer than two players remain for the next round (or none), the round goes ENDED; the director takes over.
  */
 class TeamRound(val key: SessionKey.Team, area: AreaRef, private val t: Timings) {
@@ -124,6 +124,7 @@ class TeamRound(val key: SessionKey.Team, area: AreaRef, private val t: Timings)
         if (state == State.ENDED) return emptyList()
         waiting.remove(player)
         if (!inArena.remove(player)) return endIfEmptyRematch()
+        if ((state == State.WAITING_SLOTS || state == State.COUNTDOWN) && inArena.isEmpty()) return abort(nowMs)
         return if (state == State.FIGHTING) checkEnd(nowMs) else endIfEmptyRematch()
     }
 
@@ -132,7 +133,7 @@ class TeamRound(val key: SessionKey.Team, area: AreaRef, private val t: Timings)
         if (state == State.ENDED || player in inArena || player in waiting) return emptyList()
         ratings[player] = rating
         waiting += player
-        return if (state == State.REMATCH_WAIT) emptyList() else listOf(Effect.Wait(player))
+        return listOf(Effect.Wait(player))
     }
 
     fun botDied(botId: UUID, nowMs: Long): List<Effect> {
@@ -243,7 +244,7 @@ class TeamRound(val key: SessionKey.Team, area: AreaRef, private val t: Timings)
             }
             out += Effect.Title(p, text)
         }
-        for (p in seated()) {
+        for (p in seated().filter { it !in gone }) {
             val outcome = when {
                 winner == null -> drawOutcome!!
                 p in team.getValue(winner) -> Outcome.PLAYER_WON
