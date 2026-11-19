@@ -110,8 +110,9 @@ class TeamRound(val key: SessionKey.Team, area: AreaRef, private val t: Timings)
         if (state == State.ENDED) return emptyList()
         waiting.remove(player)
         ratings.remove(player)
-        if (player in seated()) gone += player
         val wasIn = inArena.remove(player)
+        // Only a player who leaves while alive is a leaver; one who died first (and respawned outside) keeps their result.
+        if (wasIn && player in seated()) gone += player
         val active = state == State.WAITING_SLOTS || state == State.COUNTDOWN || state == State.FIGHTING
         return when {
             wasIn && active && inArena.isEmpty() -> abort(nowMs)

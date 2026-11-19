@@ -176,6 +176,16 @@ class TeamRoundTest {
         assertEquals(ENDED, r.state())
     }
 
+    @Test fun deadThenLeaves_keepsTeamResult() {
+        val (r, bots) = fighting()
+        r.playerDied(p2, 4000)
+        r.playerLeft(p2, 4100)
+        val fx = bots.getValue(Side.B).flatMap { r.botDied(it, 5000) }
+        assertTrue(Effect.TeamResult(p2, Outcome.BOT_WON) in fx)
+        assertTrue(Effect.Title(p2, Messages.TEAM_LOST) in fx)
+        assertTrue(Effect.TeamResult(p1, Outcome.PLAYER_WON) in fx)
+    }
+
     @Test fun overflowPlayers_waitAtStart() {
         val r = round(seats = 1)
         val ps = (1..3).map { id(it) }
