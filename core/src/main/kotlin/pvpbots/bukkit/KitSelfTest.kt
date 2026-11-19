@@ -43,6 +43,9 @@ internal class KitSelfTest(private val t: SelfTest, private val plugin: PvpBotsP
     private val kits get() = plugin.kitArenas
     private var lastDeath: PlayerDeathEvent? = null
 
+    /** [lastDeath]'s itemsToKeep as the event left it (the server empties that list while it keeps the items). */
+    private var keptAtDeath: List<ItemStack> = emptyList()
+
     /** Slots that matched only up to NBT key order (see [diff]). */
     private var reordered = 0
 
@@ -192,6 +195,7 @@ internal class KitSelfTest(private val t: SelfTest, private val plugin: PvpBotsP
     @EventHandler(priority = EventPriority.MONITOR)
     fun onDeath(event: PlayerDeathEvent) {
         lastDeath = event
+        keptAtDeath = event.itemsToKeep.map { it.clone() }
     }
 
     /** K1: enter a kit arena (stash + kit), trainer in the kit, refill, no drops, kit change and leave restore exactly. */
@@ -282,7 +286,7 @@ internal class KitSelfTest(private val t: SelfTest, private val plugin: PvpBotsP
         val stashedForDeath = stashFile.exists()
         p.totalExperience = 0
         p.level = 7
-        // An own item put in from outside while kitted (an ender chest): a lost round drops it like vanilla (N2).
+        // An own item put in from outside while kitted (an ender chest): a lost round keeps it (N2), nothing drops.
         val outside = ItemStack(Material.EMERALD, 6)
         outside.editMeta { it.displayName(Component.text("From the ender chest")) }
         p.inventory.addItem(outside.clone())
@@ -290,9 +294,12 @@ internal class KitSelfTest(private val t: SelfTest, private val plugin: PvpBotsP
         val killed = runCatching { p.health = 0.0 }.exceptionOrNull()
         yield(1)
         val death = lastDeath
-        val outsideDropped = death != null && death.drops.any { it.isSimilar(outside) && it.amount == 6 }
-        val noKitDropped = death != null && death.drops.none { KitApplier.isKitItem(it) }
-        val deathOk = death != null && outsideDropped && noKitDropped && death.drops.size == 1 && death.keepLevel && death.droppedExp == 0
+        val kept = keptAtDeath
+        // In itemsToKeep, and still in the dead player's inventory (the server kept it rather than dropping it).
+        val outsideKept = death != null && kept.size == 1 && kept.any { it.isSimilar(outside) && it.amount == 6 } &&
+            p.inventory.containsAtLeast(outside, 6)
+        val noKitKept = death != null && kept.none { KitApplier.isKitItem(it) }
+        val deathOk = death != null && outsideKept && noKitKept && death.drops.isEmpty() && death.keepLevel && death.droppedExp == 0
         world.getNearbyEntities(p.location, 4.0, 4.0, 4.0).filterIsInstance<org.bukkit.entity.Item>().forEach { it.remove() }
         val stashAfterDeath = stashFile.exists() && sameSlots(runCatching { StashCodec.decode(stashFile.readBytes()) }.getOrNull(), original)
 
@@ -303,10 +310,15 @@ internal class KitSelfTest(private val t: SelfTest, private val plugin: PvpBotsP
         val h2 = runCatching { t.spawnDummy("Kit", origin.x + 40, origin.z, id = id) }.getOrNull()
         var respawnDiff: String? = "no live dummy with the same UUID"
         var stashGoneAfterRespawn = false
+        var outsideBack = false
         if (h2 != null) {
+            // The server's respawn keeps the death's itemsToKeep in the inventory; the replacement dummy gets them here.
+            kept.forEach { h2.bukkit.inventory.addItem(it.clone()) }
             kits.onRespawn(h2.bukkit)
             yield(2)
-            respawnDiff = diff(original, slots(h2.bukkit))
+            val after = slots(h2.bukkit)
+            respawnDiff = diff(original.mapIndexed { i, b -> b ?: after.getOrNull(i) }, after)
+            outsideBack = h2.bukkit.inventory.containsAtLeast(outside, 6) && h2.bukkit.inventory.contents.none { KitApplier.isKitItem(it) }
             stashGoneAfterRespawn = !stashFile.exists()
         }
 
@@ -316,7 +328,7 @@ internal class KitSelfTest(private val t: SelfTest, private val plugin: PvpBotsP
                 botUntagged && playerTagged && arrowCancelled &&
                 refilled && kitAfterSpawn == null && notRestashed && dropCancelled && leaveDiff == null && stashGoneAfterLeave &&
                 stashedAgain && releaseDiff == null && stashGoneAfterRelease && stashedForDeath && deathOk && stashAfterDeath &&
-                pickupCancelled && respawnDiff == null && stashGoneAfterRespawn,
+                pickupCancelled && respawnDiff == null && outsideBack && stashGoneAfterRespawn,
             "test items in $originalCount slots; enter: stash file $stashed (decodes to the original slots: $stashMatches), " +
                 "kit ${kitAtEnter ?: "iron exactly"}, health ${"%.1f/%.1f".format(healthAtEnter, max)} food $foodAtEnter (was 12/8), full: $healed; " +
                 "trainer after $spawned ticks, its kit ${botKit ?: "iron, no totem"}, bot items untagged: $botUntagged, player kit items tagged: $playerTagged; " +
@@ -324,8 +336,9 @@ internal class KitSelfTest(private val t: SelfTest, private val plugin: PvpBotsP
                 "kit after spawn ${kitAfterSpawn ?: "iron exactly"}, stash unchanged: $notRestashed; drop cancelled: $dropCancelled; pick-up cancelled: $pickupCancelled; " +
                 "leave: ${leaveDiff ?: "every slot identical"}, stash deleted: $stashGoneAfterLeave; " +
                 "kit change (${setKit.lastOrNull()}): stashed $stashedAgain, ${releaseDiff ?: "every slot identical"}, stash deleted: $stashGoneAfterRelease; " +
-                "death${killed?.let { " (setHealth(0) threw $it)" } ?: ""}: stashed $stashedForDeath, event ${death?.let { "drops ${it.drops.size} (own outside item among them $outsideDropped, no kit item $noKitDropped), keepLevel ${it.keepLevel}, droppedExp ${it.droppedExp}" } ?: "not seen"}, " +
-                "stash intact after death: $stashAfterDeath; respawn (live dummy, same UUID): ${respawnDiff ?: "every slot identical"}, " +
+                "death${killed?.let { " (setHealth(0) threw $it)" } ?: ""}: stashed $stashedForDeath, event ${death?.let { "drops ${it.drops.size}, own outside item kept $outsideKept (no kit item kept $noKitKept), keepLevel ${it.keepLevel}, droppedExp ${it.droppedExp}" } ?: "not seen"}, " +
+                "stash intact after death: $stashAfterDeath; respawn (live dummy, same UUID): ${respawnDiff ?: "every stashed slot identical"}, " +
+                "own outside item back with the stash $outsideBack, " +
                 "stash deleted: $stashGoneAfterRespawn; slot comparisons equal only up to NBT key order: $reordered",
         )
         kits.forget(id)

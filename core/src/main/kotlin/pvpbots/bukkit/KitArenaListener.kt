@@ -43,8 +43,8 @@ class KitArenaListener(private val plugin: PvpBotsPlugin) : Listener {
     fun onPickupArrow(event: PlayerPickupArrowEvent) = kits.onPickupArrow(event)
 
     /**
-     * A death while wearing an arena kit drops no kit item (own items from outside drop as usual); the player keeps their
-     * XP (the stash comes back on respawn).
+     * A death while wearing an arena kit drops nothing (own items from outside are kept and come back with the stash);
+     * the player keeps their XP (the stash comes back on respawn).
      */
     @EventHandler(priority = EventPriority.HIGHEST)
     fun onDeath(event: PlayerDeathEvent) = kits.onDeath(event)

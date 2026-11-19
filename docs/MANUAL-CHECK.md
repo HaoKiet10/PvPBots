@@ -73,7 +73,7 @@ otherwise.
    the `.dat` file is gone.
 5. **Logout:** walk in again, log out inside, log back in: your original items are back before you can act, the
    stash file is gone.
-6. **Death:** walk in, let the trainer (or a second player) kill you. No kit item drops from the body, XP is kept. After
+6. **Death:** walk in, let the trainer (or a second player) kill you. Nothing drops from the body, XP is kept. After
    respawn (outside the arena) your original items are back.
 7. **Crash:** walk in, then kill the server process hard (no `stop`). Start it and join: your original items come
    back on join.
@@ -87,8 +87,8 @@ otherwise.
 
 10. Items from outside: walk in, open `/enderchest` (op) or any trade/mail GUI and move one of your own items into
     your inventory. Win a round: the item is still there next to the fresh kit. Walk out: it is back with your
-    original items, and no kit item remains. Repeat, but lose the round by dying: that item drops from your body as in
-    vanilla (no kit item drops), it is never destroyed.
+    original items, and no kit item remains. Repeat, but lose the round by dying: nothing drops; after the respawn the
+    item is back with your original items.
 11. Kit change mid-fight: while fighting in `kit1`, `/pvpbots arena kit kit1 diamond`. Your items come back and you
     are given the diamond kit at once; after the current round the next trainer wears diamond and you are refilled
     with diamond.

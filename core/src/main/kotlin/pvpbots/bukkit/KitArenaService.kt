@@ -96,7 +96,8 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
 
     /**
      * Wearing this arena's kit inside that arena (stash safe on disk, no failed restore): drops and pick-ups are blocked,
-     * a death drops no kit item (own items that came in from outside drop as usual), and a new round refills the kit.
+     * a death drops nothing (own items that came in from outside are kept and come back with the stash), and a new
+     * round refills the kit.
      * Anyone else follows vanilla rules, so their own items are never destroyed.
      */
     fun inKitArena(p: Player): Boolean = wearingKitHere(p.uniqueId)
@@ -331,12 +332,16 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
     }
 
     /**
-     * PlayerDeathEvent: wearing a kit in its arena: no kit item drops, no XP orbs, XP kept. The player's own items
-     * (untagged: from an ender chest, a GUI, another plugin) drop as vanilla would, never destroyed.
+     * PlayerDeathEvent: wearing a kit in its arena: nothing drops, no XP orbs, XP kept. Kit items go; the player's own
+     * items (untagged: from an ender chest, a GUI, another plugin) are kept through the death ([PlayerDeathEvent.getItemsToKeep])
+     * and come back with the stash after the respawn (the restore hands untagged items back). Dropped inside the arena
+     * they could not be picked up while kitted.
      */
     fun onDeath(event: PlayerDeathEvent) {
         if (isBot(event.player.uniqueId) || !inKitArena(event.player)) return
-        event.drops.removeIf { KitApplier.isKitItem(it) }
+        val own = event.drops.filter { !KitApplier.isKitItem(it) }
+        event.drops.clear()
+        event.itemsToKeep.addAll(own)
         event.keepLevel = true
         event.droppedExp = 0
     }
@@ -455,6 +460,15 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
         drops.forEach { it.remove() } // now in the stash
         kits.applyToPlayer(p, kitName)
         kitted[id] = Kitted(p, area.arena, kitName)
+        // Put a tagged kit item on disk now: a crash join then sees "saved while kitted" instead of guessing from an
+        // untagged inventory. The stash is already safe, so a failed save is only a warning.
+        try {
+            savePlayer(p)
+        } catch (e: VirtualMachineError) {
+            throw e
+        } catch (e: Throwable) {
+            plugin.logger.log(Level.WARNING, "Kit arena ${area.arena}: could not save ${p.name} after giving the kit (the stash is safe)", e)
+        }
         p.sendMessage("PvpBots: your items are saved; here you fight with the $kitName kit. You get them back when you leave.")
         return true
     }
@@ -496,6 +510,9 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
                 plugin.logger.warning("Restored the items of $name but could not delete ${file.absolutePath} (${e.message}); renamed it to ${aside.name}")
             } catch (e2: Exception) {
                 spent += id
+                // Durable too: a plugin reload must not hand this (already restored) stash out again.
+                runCatching { ArenaRegistry.writeDurably(unsavedMarker(id), ByteArray(0)) }
+                    .onFailure { plugin.logger.log(Level.WARNING, "Could not write ${unsavedMarker(id).absolutePath} for $name", it) }
                 plugin.logger.log(
                     Level.SEVERE,
                     "Restored the items of $name but could neither delete nor rename ${file.absolutePath}: delete it by hand before " +
