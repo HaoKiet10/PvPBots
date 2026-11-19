@@ -10,6 +10,7 @@ import org.bukkit.event.player.PlayerPickupArrowEvent
 import org.bukkit.inventory.ItemStack
 import pvpbots.arena.Action
 import pvpbots.arena.KitRules
+import pvpbots.arena.StackDiff
 import pvpbots.arena.StashCodec
 import pvpbots.session.AreaRef
 import java.io.File
@@ -48,10 +49,16 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
     private val spent = HashSet<UUID>()
 
     /**
-     * Restored, but [Player.saveData] failed, so the file is kept (a crash must not lose the items): never restored again
-     * while the server runs; the save and delete are retried when the player quits and when the plugin disables.
+     * Restored, but [Player.saveData] failed, so the file is kept (a crash must not lose the items): not restored again
+     * while the player stays online; the save and delete are retried when the player quits and when the plugin disables
+     * or enables. Also written durably as [unsavedMarker], so a plugin reload keeps it; either one counts (see
+     * [isUnsaved]). A join clears both: the inventory is then loaded from disk, which may predate the restore, so the
+     * join restores again (see [restore]).
      */
     private val unsaved = HashSet<UUID>()
+
+    /** An [unsavedMarker] a join could not delete: ignored for this player until a new failed save writes it again. */
+    private val unsavedMarkerIgnored = HashSet<UUID>()
 
     /**
      * A restore of this player's stash failed: they still have whatever they had (kit plus anything gathered since), which
@@ -72,7 +79,15 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
 
     fun stashFile(id: UUID) = File(dir, "$id.dat")
 
-    fun hasStash(id: UUID): Boolean = id !in spent && id !in unsaved && stashFile(id).exists()
+    fun hasStash(id: UUID): Boolean = id !in spent && !isUnsaved(id) && stashFile(id).exists()
+
+    /**
+     * `stash/<uuid>.unsaved`: this player's stash was restored into their live inventory but their data could not be
+     * saved, so the `.dat` is kept for a crash; until the next successful save it is not restored again.
+     */
+    fun unsavedMarker(id: UUID) = File(dir, "$id.unsaved")
+
+    private fun isUnsaved(id: UUID): Boolean = id in unsaved || (id !in unsavedMarkerIgnored && unsavedMarker(id).exists())
 
     /** `stash/<uuid>.failed`: a restore of this player's stash failed; its text is the kit they were wearing (may be empty). */
     fun failedMarker(id: UUID) = File(dir, "$id.failed")
@@ -81,8 +96,8 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
 
     /**
      * Wearing this arena's kit inside that arena (stash safe on disk, no failed restore): drops and pick-ups are blocked,
-     * a death drops nothing, and a new round refills the kit. Anyone else follows vanilla rules, so their own items
-     * are never destroyed.
+     * a death drops no kit item (own items that came in from outside drop as usual), and a new round refills the kit.
+     * Anyone else follows vanilla rules, so their own items are never destroyed.
      */
     fun inKitArena(p: Player): Boolean = wearingKitHere(p.uniqueId)
 
@@ -140,9 +155,13 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
      * is not a tagged kit item (cursor included) is theirs and is handed back on top of the stash, leftovers dropped at
      * their feet. If the save fails the file is kept (see [unsaved]).
      *
-     * [onJoin]: the inventory was loaded from disk (after a crash). If it holds no tagged kit item it was saved before
-     * the stash was made, so its untagged items are the stashed ones again and are NOT handed back (that would
-     * duplicate them); with a kit item in it, it was saved while kitted and its untagged items are handed back.
+     * [onJoin]: the inventory was loaded from disk (after a crash). With a kit item in it, it was saved while kitted and
+     * its untagged items are handed back. With no kit item in it, it was saved either before the stash was made (then it
+     * holds the stashed items again) or after an earlier restore whose stash was kept (a failed save or delete, then a
+     * later autosave), or the kit items had left it: its untagged items minus ONE copy of the stash contents
+     * ([StackDiff.minusOnce], `isSimilar`, by amount) are handed back. So the intended case (saved before the stash)
+     * hands back nothing, and items gained or put in since are kept; the worst case is a duplicate (a stashed item
+     * the player used up or gave away after an earlier restore comes back), never a loss.
      */
     fun restore(p: Player, onJoin: Boolean = false): Boolean {
         val id = p.uniqueId
@@ -171,7 +190,15 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
             // Not a kit item = the player's own (gathered after a failed restore, or put in from an ender chest, a GUI,
             // another plugin): handed back on top of the stash. Kit items (tagged) go.
             val savedBeforeStash = onJoin && !restoreFailedState(id) && (inv.contents.toList() + cursor).none { KitApplier.isKitItem(it) }
-            val held = if (savedBeforeStash) emptyList() else ownItems(inv.contents.toList() + cursor)
+            val own = ownItems(inv.contents.toList() + cursor)
+            val held = if (!savedBeforeStash) {
+                own
+            } else {
+                // Possibly the stash again: hand back only what is not covered by one copy of it (never destroy).
+                val stashed = items.filter { it != null && !it.type.isAir }.map { it!! }
+                StackDiff.minusOnce(own, stashed, { a, b -> a.isSimilar(b) }, { it.amount })
+                    .map { l -> l.stack.clone().also { it.amount = l.amount } }
+            }
             val contents = arrayOfNulls<ItemStack>(size)
             for (i in 0 until minOf(size, items.size)) contents[i] = items[i]
             inv.contents = contents
@@ -194,8 +221,8 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
     }
 
     /**
-     * Saves [p]'s data, then deletes [file]. False (file kept, [unsaved], SEVERE logged) when the save throws: a crash
-     * then still finds the stash.
+     * Saves [p]'s data, then deletes [file] and the [unsavedMarker]. False (file kept, [unsaved] and the marker written,
+     * SEVERE logged) when the save throws: a crash then still finds the stash, a reload does not restore it twice.
      */
     private fun saveAndDiscard(p: Player, file: File): Boolean {
         val id = p.uniqueId
@@ -205,6 +232,15 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
             throw e
         } catch (e: Throwable) {
             unsaved += id
+            unsavedMarkerIgnored -= id
+            val marker = unsavedMarker(id)
+            if (!marker.exists()) {
+                try {
+                    ArenaRegistry.writeDurably(marker, ByteArray(0))
+                } catch (e2: Exception) {
+                    plugin.logger.log(Level.SEVERE, "Could not write ${marker.absolutePath} for ${p.name}; their unsaved restore is remembered until restart or reload only", e2)
+                }
+            }
             plugin.logger.log(
                 Level.SEVERE,
                 "Restored the items of ${p.name} ($id) but their player data could not be saved; the stash ${file.absolutePath} is kept " +
@@ -216,16 +252,19 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
         }
         unsaved -= id
         discard(id, file, p.name)
+        // Kept while the stash could not be deleted (spent): a reload must not hand it out again.
+        if (!file.exists()) clearUnsavedMarker(id, p.name)
         return true
     }
 
-    /** A restore whose save failed: try the save and the delete again (quit, disable). */
+    /** A restore whose save failed: try the save and the delete again (quit, disable, enable after a reload). */
     private fun retryUnsaved(p: Player) {
         val id = p.uniqueId
-        if (id !in unsaved) return
+        if (!isUnsaved(id)) return
         val file = stashFile(id)
         if (!file.exists()) {
             unsaved -= id
+            clearUnsavedMarker(id, p.name)
             return
         }
         if (saveAndDiscard(p, file)) plugin.logger.info("Saved ${p.name} on a retry; their restored stash is deleted")
@@ -264,8 +303,14 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
         kitted.remove(id)
         areas.remove(id)
         awaitingRespawn.remove(id)
-        // A stash kept because a save failed: after a rejoin (or a restart) it is restored again; never lost.
+        // A stash kept because a save failed: the inventory was just loaded from disk, which may predate that restore
+        // (a crash before any later save), so it is restored again (the join rule hands back what was gained since).
         unsaved.remove(id)
+        val m = unsavedMarker(id)
+        if (m.exists() && !m.delete()) {
+            unsavedMarkerIgnored += id
+            plugin.logger.severe("Could not delete ${m.absolutePath} for ${p.name}; ignored for them until the server restarts (delete it by hand)")
+        }
         if (!hasStash(id)) return
         if (p.isDead) {
             awaitingRespawn += id
@@ -285,10 +330,13 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
         awaitingRespawn.remove(id)
     }
 
-    /** PlayerDeathEvent: wearing a kit in its arena: no item drops, no XP orbs, XP kept. */
+    /**
+     * PlayerDeathEvent: wearing a kit in its arena: no kit item drops, no XP orbs, XP kept. The player's own items
+     * (untagged: from an ender chest, a GUI, another plugin) drop as vanilla would, never destroyed.
+     */
     fun onDeath(event: PlayerDeathEvent) {
         if (isBot(event.player.uniqueId) || !inKitArena(event.player)) return
-        event.drops.clear()
+        event.drops.removeIf { KitApplier.isKitItem(it) }
         event.keepLevel = true
         event.droppedExp = 0
     }
@@ -349,8 +397,21 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
         awaitingRespawn.remove(id)
         spent.remove(id)
         unsaved.remove(id)
+        unsavedMarkerIgnored.remove(id)
         restoreFailed.remove(id)
         failedMarker(id).delete()
+        unsavedMarker(id).delete()
+    }
+
+    /** Self-test: drop every in-memory note about [id] (what a reload or restart does); files and markers stay. */
+    internal fun forgetInMemory(id: UUID) {
+        kitted.remove(id)
+        areas.remove(id)
+        awaitingRespawn.remove(id)
+        spent.remove(id)
+        unsaved.remove(id)
+        unsavedMarkerIgnored.remove(id)
+        restoreFailed.remove(id)
     }
 
     /** Self-test: forget failed restores held in memory only (what a restart does); the marker file stays. */
@@ -366,7 +427,7 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
             return false
         }
         val file = stashFile(id)
-        if (file.exists() || id in spent || id in unsaved) return false // never overwrite a stash
+        if (file.exists() || id in spent || isUnsaved(id)) return false // never overwrite a stash
         // A failure marker without a stash is stale (the inventory is entirely the player's and is stashed now).
         clearFailed(id, p.name)
         // Cursor and crafting-grid items go back into the inventory; what vanilla drops because it is full is captured
@@ -469,6 +530,12 @@ class KitArenaService(private val plugin: PvpBotsPlugin, private val dir: File) 
         if (m.exists() && !m.delete()) {
             plugin.logger.warning("Could not delete ${m.absolutePath} for $name; delete it by hand (until then their kit-arena drops follow vanilla rules)")
         }
+    }
+
+    private fun clearUnsavedMarker(id: UUID, name: String) {
+        unsavedMarkerIgnored -= id
+        val m = unsavedMarker(id)
+        if (m.exists() && !m.delete()) plugin.logger.warning("Could not delete ${m.absolutePath} for $name; delete it by hand (its stash is already gone)")
     }
 
     private fun failed(p: Player, file: File, e: Throwable) {

@@ -53,17 +53,24 @@ internal class KitSelfTest(private val t: SelfTest, private val plugin: PvpBotsP
     suspend fun SequenceScope<Int>.run() {
         Bukkit.getPluginManager().registerEvents(this@KitSelfTest, plugin)
         val realSave = kits.savePlayer
-        // Dummies must leave no player data behind (D1): saves are recorded instead (K2 runs one real save and cleans up).
-        kits.savePlayer = { p ->
-            saves += p.uniqueId to kits.stashFile(p.uniqueId).exists()
-            if (failSaves) throw java.io.IOException("self-test: save refused")
+        // Dummies must leave no player data behind (D1): their saves are recorded instead (K2 runs one real save and
+        // cleans up). A real player restored meanwhile (online during the self-test) is saved for real.
+        val recorder: (Player) -> Unit = { p ->
+            if (!t.isFake(p.uniqueId)) {
+                realSave(p)
+            } else {
+                saves += p.uniqueId to kits.stashFile(p.uniqueId).exists()
+                if (failSaves) throw java.io.IOException("self-test: save refused")
+            }
         }
+        kits.savePlayer = recorder
         try {
             kitArena()
-            stashOnJoin(realSave)
+            stashOnJoin(realSave, recorder)
             failedRestore()
             kitChangeMidSession()
             saveFails()
+            unsavedSurvivesRestart()
         } finally {
             kits.savePlayer = realSave
             HandlerList.unregisterAll(this@KitSelfTest)
@@ -105,6 +112,77 @@ internal class KitSelfTest(private val t: SelfTest, private val plugin: PvpBotsP
             "failing save: items back $restored, save attempted while the stash existed $savedWithStash, stash kept $kept, " +
                 "not counted as a stash any more $notAgain, diamonds exactly once $once; " +
                 "quit: save retried with the stash present $retried, stash deleted $deleted",
+        )
+        kits.forget(id)
+        if (file.exists()) file.delete()
+        runCatching { t.removeDummy(h) }
+    }
+
+    /**
+     * K6 (N1): a restore whose save failed survives a reload and a crash without losing anything. (1) The `.unsaved`
+     * marker is written, and while it is there the stash is not restored again (a plugin reload forgets memory, not the
+     * marker); the next successful save deletes stash and marker. (2) Scenario (a): items gained after that restore, a
+     * later save the plugin never sees (autosave), a crash, then a join with a disk inventory holding no kit item: the
+     * gained items are kept and the stash items are not duplicated.
+     */
+    private suspend fun SequenceScope<Int>.unsavedSurvivesRestart() {
+        val h = t.spawnDummy("Uns", 1500, 0)
+        val p = h.bukkit
+        val id = p.uniqueId
+        yield(2)
+        val size = p.inventory.contents.size
+        val gem = ItemStack(Material.DIAMOND, 3)
+        gem.editMeta { it.displayName(Component.text("Stashed gem")) }
+        val stash = arrayOfNulls<ItemStack>(size).also { it[4] = gem }
+        val file = kits.stashFile(id)
+        val marker = kits.unsavedMarker(id)
+        fun gems() = p.inventory.contents.filter { it != null && it.isSimilar(gem) }.sumOf { it!!.amount }
+        fun kitted() {
+            p.inventory.clear()
+            p.inventory.setItem(0, ItemStack(Material.IRON_SWORD).also { KitApplier.tag(it) })
+            ArenaRegistry.writeDurably(file, StashCodec.encode(stash.map { it?.serializeAsBytes() }))
+        }
+
+        // (1) Marker path: restore with a failing save, then a reload (memory gone, marker kept).
+        kitted()
+        failSaves = true
+        saves.clear()
+        kits.restore(p)
+        failSaves = false
+        val markerWritten = marker.isFile && file.exists()
+        kits.forgetInMemory(id) // a plugin reload: the player stays online with the restored inventory
+        val notStashAfterReload = !kits.hasStash(id)
+        kits.restore(p) // must not hand the stash out again
+        val gemsOnce = gems() == 3
+        saves.clear()
+        kits.onQuit(p) // the next successful save
+        val savedWithStash = saves.firstOrNull() == (id to true)
+        val markerPathClean = !file.exists() && !marker.exists() && gems() == 3
+
+        // (2) Scenario (a): failed save, items gained, autosave (unseen), crash (memory gone), join.
+        kitted()
+        failSaves = true
+        kits.restore(p)
+        failSaves = false
+        val gained = ItemStack(Material.EMERALD, 5)
+        gained.editMeta { it.displayName(Component.text("Gained after the restore")) }
+        p.inventory.addItem(gained.clone())
+        // The disk inventory after the autosave is the live one: restored stash + gained, no kit item.
+        kits.forgetInMemory(id)
+        kits.onJoin(p)
+        val gainedKept = p.inventory.containsAtLeast(gained, 5)
+        val crashGems = gems()
+        val crashClean = !file.exists() && !marker.exists()
+        val noKit = p.inventory.contents.none { KitApplier.isKitItem(it) }
+
+        t.check(
+            "K6 unsaved restore survives a restart",
+            markerWritten && notStashAfterReload && gemsOnce && savedWithStash && markerPathClean && gainedKept && crashGems == 3 &&
+                crashClean && noKit,
+            "failing save: .unsaved marker written with the stash kept $markerWritten; after a reload not a stash $notStashAfterReload, " +
+                "restore again hands out nothing (gems exactly 3) $gemsOnce; next save made with the stash present $savedWithStash, " +
+                "stash and marker deleted $markerPathClean; crash after an autosave then join: gained items kept $gainedKept, " +
+                "stashed gems $crashGems (expected 3, no duplication), stash and marker deleted $crashClean, no kit item $noKit",
         )
         kits.forget(id)
         if (file.exists()) file.delete()
@@ -204,11 +282,18 @@ internal class KitSelfTest(private val t: SelfTest, private val plugin: PvpBotsP
         val stashedForDeath = stashFile.exists()
         p.totalExperience = 0
         p.level = 7
+        // An own item put in from outside while kitted (an ender chest): a lost round drops it like vanilla (N2).
+        val outside = ItemStack(Material.EMERALD, 6)
+        outside.editMeta { it.displayName(Component.text("From the ender chest")) }
+        p.inventory.addItem(outside.clone())
         lastDeath = null
         val killed = runCatching { p.health = 0.0 }.exceptionOrNull()
         yield(1)
         val death = lastDeath
-        val deathOk = death != null && death.drops.isEmpty() && death.keepLevel && death.droppedExp == 0
+        val outsideDropped = death != null && death.drops.any { it.isSimilar(outside) && it.amount == 6 }
+        val noKitDropped = death != null && death.drops.none { KitApplier.isKitItem(it) }
+        val deathOk = death != null && outsideDropped && noKitDropped && death.drops.size == 1 && death.keepLevel && death.droppedExp == 0
+        world.getNearbyEntities(p.location, 4.0, 4.0, 4.0).filterIsInstance<org.bukkit.entity.Item>().forEach { it.remove() }
         val stashAfterDeath = stashFile.exists() && sameSlots(runCatching { StashCodec.decode(stashFile.readBytes()) }.getOrNull(), original)
 
         // Respawn: a dummy cannot respawn, so the dead one is replaced by a live dummy with the same UUID outside the
@@ -239,7 +324,7 @@ internal class KitSelfTest(private val t: SelfTest, private val plugin: PvpBotsP
                 "kit after spawn ${kitAfterSpawn ?: "iron exactly"}, stash unchanged: $notRestashed; drop cancelled: $dropCancelled; pick-up cancelled: $pickupCancelled; " +
                 "leave: ${leaveDiff ?: "every slot identical"}, stash deleted: $stashGoneAfterLeave; " +
                 "kit change (${setKit.lastOrNull()}): stashed $stashedAgain, ${releaseDiff ?: "every slot identical"}, stash deleted: $stashGoneAfterRelease; " +
-                "death${killed?.let { " (setHealth(0) threw $it)" } ?: ""}: stashed $stashedForDeath, event ${death?.let { "drops ${it.drops.size}, keepLevel ${it.keepLevel}, droppedExp ${it.droppedExp}" } ?: "not seen"}, " +
+                "death${killed?.let { " (setHealth(0) threw $it)" } ?: ""}: stashed $stashedForDeath, event ${death?.let { "drops ${it.drops.size} (own outside item among them $outsideDropped, no kit item $noKitDropped), keepLevel ${it.keepLevel}, droppedExp ${it.droppedExp}" } ?: "not seen"}, " +
                 "stash intact after death: $stashAfterDeath; respawn (live dummy, same UUID): ${respawnDiff ?: "every slot identical"}, " +
                 "stash deleted: $stashGoneAfterRespawn; slot comparisons equal only up to NBT key order: $reordered",
         )
@@ -249,14 +334,17 @@ internal class KitSelfTest(private val t: SelfTest, private val plugin: PvpBotsP
         cleanupArena(name)
     }
 
-    /** K2: a stash file present when the player joins is restored exactly and deleted. */
-    private suspend fun SequenceScope<Int>.stashOnJoin(realSave: (Player) -> Unit) {
+    /**
+     * K2: a stash file present when the player joins is restored exactly and deleted. The inventory loaded from disk holds
+     * no kit item: the stash items again (the usual crash before an autosave; spread over other slots and stacks) plus
+     * one item that is not in the stash. Only that item is handed back (N1): nothing duplicated, nothing destroyed.
+     */
+    private suspend fun SequenceScope<Int>.stashOnJoin(realSave: (Player) -> Unit, recorder: (Player) -> Unit) {
         val h = t.spawnDummy("Join", 1100, 0)
         val p = h.bukkit
         yield(2)
         val size = p.inventory.contents.size
         p.inventory.clear()
-        p.inventory.setItem(3, ItemStack(Material.DIRT, 5)) // whatever was saved with the player before the crash
         val sword = ItemStack(Material.GOLDEN_SWORD)
         sword.editMeta { it.displayName(Component.text("Crash survivor")) }
         val stash = arrayOfNulls<ItemStack>(size)
@@ -265,6 +353,14 @@ internal class KitSelfTest(private val t: SelfTest, private val plugin: PvpBotsP
         if (size > 39) stash[39] = ItemStack(Material.TURTLE_HELMET)
         if (size > 40) stash[40] = ItemStack(Material.SHIELD)
         val stashSlots = stash.map { it?.serializeAsBytes() }
+        // What was saved with the player before the crash: the stashed items (elsewhere) and one item not in the stash.
+        p.inventory.setItem(12, sword.clone())
+        p.inventory.setItem(13, ItemStack(Material.EMERALD, 4))
+        p.inventory.setItem(14, ItemStack(Material.EMERALD, 6))
+        if (size > 39) p.inventory.setItem(39, ItemStack(Material.TURTLE_HELMET))
+        if (size > 40) p.inventory.setItem(40, ItemStack(Material.SHIELD))
+        val dirt = ItemStack(Material.DIRT, 5)
+        p.inventory.setItem(3, dirt.clone())
         val file = kits.stashFile(p.uniqueId)
         ArenaRegistry.writeDurably(file, StashCodec.encode(stashSlots))
         val written = file.exists()
@@ -276,17 +372,23 @@ internal class KitSelfTest(private val t: SelfTest, private val plugin: PvpBotsP
         try {
             kits.onJoin(p)
         } finally {
-            kits.savePlayer = { pl -> saves += pl.uniqueId to kits.stashFile(pl.uniqueId).exists(); if (failSaves) throw java.io.IOException("self-test: save refused") }
+            kits.savePlayer = recorder
         }
-        val d = diff(stashSlots, slots(p))
+        val afterJoin = slots(p)
+        val d = diff(stashSlots.mapIndexed { i, b -> b ?: afterJoin.getOrNull(i) }, afterJoin)
+        val dirtBack = p.inventory.containsAtLeast(dirt, 5)
+        fun count(item: ItemStack) = p.inventory.contents.filter { it != null && it.isSimilar(item) }.sumOf { it!!.amount }
+        val noDup = count(sword) == 1 && count(ItemStack(Material.EMERALD)) == 10 && count(ItemStack(Material.TURTLE_HELMET)) <= 1 &&
+            count(ItemStack(Material.SHIELD)) <= 1 && p.inventory.contents.count { it != null && !it.type.isAir } == stash.count { it != null } + 1
         val deleted = !file.exists()
         yield(5) // the save may finish off the main thread
         val saved = playerDataFile(p.uniqueId)
         val savedOk = saved != null && saved.lastModified() >= before && stashAtSave == true
         t.check(
             "K2 stash on join",
-            written && d == null && deleted && savedOk,
-            "stash file written: $written ($size slots); after join: ${d ?: "inventory equals the stash, every slot identical"}; stash deleted: $deleted; " +
+            written && d == null && dirtBack && noDup && deleted && savedOk,
+            "stash file written: $written ($size slots); after join: ${d ?: "every stashed slot identical"}; item not in the stash handed back: $dirtBack; " +
+                "stash items not duplicated: $noDup; stash deleted: $deleted; " +
                 "player data saved while the stash still existed ($stashAtSave): ${saved?.let { "${it.parentFile.name}/${it.name}, written ${System.currentTimeMillis() - it.lastModified()} ms ago" } ?: "no file"}",
         )
         playerFiles(p.uniqueId).forEach { it.delete() }

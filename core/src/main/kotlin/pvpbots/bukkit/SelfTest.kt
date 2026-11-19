@@ -515,6 +515,9 @@ class SelfTest(
         return h
     }
 
+    /** A dummy (or fake bot) this self-test made: never a real player. */
+    internal fun isFake(id: UUID): Boolean = id in fakeIds
+
     internal fun removeDummy(h: BotHandle) {
         manager.adapter.remove(h)
         dummies.remove(h)

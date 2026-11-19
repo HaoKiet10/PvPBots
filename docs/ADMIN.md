@@ -140,14 +140,20 @@ both the player and the trainer fight in it, so the fight is about skill, not ge
   same goes for an item held on the cursor. Picking up items and arrows is blocked inside.
 - **Getting items back:** the saved items are restored and the file deleted when the player walks out of the arena,
   respawns after dying, or logs out (restored before the server saves them), and when the plugin is disabled or the
-  arena is removed or its kit changed. Dropping items is blocked inside, and dying drops nothing (XP is kept).
+  arena is removed or its kit changed. Dropping items is blocked inside, and dying drops no kit item (XP is kept);
+  the player's own items that came in from outside (see above) drop from the body as in vanilla, never destroyed.
 - **Crash safety:** after a server crash the stash file is still there; it is restored when the player next joins.
-  If the inventory the server loads then holds no kit item (it was saved before the player entered), it is simply
-  replaced by the stash; if it holds kit items, any other items in it are handed back on top of the stash.
+  If the inventory the server loads then holds kit items, any other items in it are handed back on top of the stash.
+  If it holds no kit item (usually it was saved before the player entered, so it is the stash again), the stash is
+  put back and only what the loaded inventory holds beyond one copy of the stash is handed back (matched item by
+  item and by amount): nothing is duplicated in the usual case and nothing gained since is lost; at worst a stashed
+  item the player had already used up after an earlier restore comes back.
   The file is deleted only after a successful restore **and** after the player's data was saved to disk (Paper would
   otherwise save it only at the next autosave or logout). If that save fails, the file is kept, a `SEVERE` line says
-  so, and the save is retried when the player logs out; if the file is still there after a clean logout, compare the
-  player's inventory with it before deleting it (a later join would hand the stash out again).
+  so, a marker `plugins/PvpBots/stash/<uuid>.unsaved` is written (the stash is then not handed out again while the
+  player stays online, even across a plugin reload), and the save is retried when the player logs out and when the
+  plugin is disabled or enabled; a successful retry deletes the `.dat` and the marker. If they are still there after a
+  clean logout, the player's next join restores the stash with the rule above (nothing lost; at worst a duplicate).
 - **If the stash cannot be saved** when entering, nothing is changed: the player keeps their gear and is told.
 - **A stash that cannot be restored:** the plugin keeps the file, leaves the player's inventory as it is, tells the
   player ("Your items could not be restored automatically; an admin has been notified.") and logs a `SEVERE` line
