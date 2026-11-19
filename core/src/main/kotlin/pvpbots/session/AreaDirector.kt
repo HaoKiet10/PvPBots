@@ -87,6 +87,7 @@ class AreaDirector(
         val effects = when (key) {
             is SessionKey.Trainer -> trainers[key.owner]?.takeIf { it.botId() == botId }?.botDied(nowMs).orEmpty()
             is SessionKey.Squad -> squads[key]?.allyDied(botId, nowMs).orEmpty()
+            is SessionKey.Team -> emptyList() // wired with team rounds (v3)
         }
         run(effects, nowMs)
         // Squad deaths emit no RemoveBot; make sure the dead bot's slot is freed either way.
@@ -111,6 +112,7 @@ class AreaDirector(
                     s.allyLost(botId)
                 } else s.allyDied(botId, nowMs)
             }.orEmpty()
+            is SessionKey.Team -> emptyList() // wired with team rounds (v3)
         }
         run(effects, nowMs)
         if (botId in alive) run(listOf(Effect.RemoveBot(botId)), nowMs)
@@ -175,6 +177,7 @@ class AreaDirector(
 
     fun fighting(botId: UUID): Boolean = when (val key = alive[botId]) {
         is SessionKey.Squad -> true
+        is SessionKey.Team -> false // wired with team rounds (v3)
         is SessionKey.Trainer -> trainers[key.owner]?.fighting() == true
         null -> false
     }
@@ -188,6 +191,7 @@ class AreaDirector(
                 forget(it.key)
             }
             Role.ALLY -> squads[SessionKey.Squad(from.world, from.regionId)]?.let { run(it.playerLeft(player, nowMs), nowMs) }
+            Role.TEAM, Role.BOSS -> Unit // wired in v3
         }
     }
 
@@ -207,6 +211,7 @@ class AreaDirector(
                     ?: AllySquad(to, t).also { squads[key] = it; areas[key] = to; streak.reset(key) }
                 run(s.playerEntered(player, nowMs), nowMs)
             }
+            Role.TEAM, Role.BOSS -> Unit // wired in v3
         }
     }
 
@@ -217,6 +222,7 @@ class AreaDirector(
                 areas[s.key] = to
             }
             Role.ALLY -> SessionKey.Squad(to.world, to.regionId).let { k -> if (k in squads) areas[k] = to }
+            Role.TEAM, Role.BOSS -> Unit // wired in v3
         }
     }
 
@@ -231,6 +237,7 @@ class AreaDirector(
     private fun sessionActive(key: SessionKey): Boolean = when (key) {
         is SessionKey.Trainer -> trainers[key.owner]?.let { it.state() != TrainerSession.State.ENDED } == true
         is SessionKey.Squad -> squads[key]?.let { it.state() != AllySquad.State.ENDED } == true
+        is SessionKey.Team -> false // wired with team rounds (v3)
     }
 
     private fun run(effects: List<Any>, nowMs: Long) {
@@ -269,6 +276,7 @@ class AreaDirector(
         val effects = when (key) {
             is SessionKey.Trainer -> trainers[key.owner]?.slotGranted(now)
             is SessionKey.Squad -> squads[key]?.slotGranted(now)
+            is SessionKey.Team -> null // wired with team rounds (v3)
         }
         if (effects.isNullOrEmpty()) releaseSlot() else work.addAll(effects)
     }
@@ -299,6 +307,7 @@ class AreaDirector(
             is Effect.RoundEnded -> guarded("round end for ${e.owner}") { port.roundEnded(e.owner, e.outcome) }
             is Effect.Title -> guarded("title for ${e.player}") { port.title(e.player, e.text) }
             is Effect.ActionBar -> guarded("action bar for ${e.player}") { port.actionBar(e.player, e.text) }
+            is Effect.SpawnTeamBot, is Effect.PlacePlayer, is Effect.TeamResult, is Effect.Wait -> Unit // wired with team rounds (v3)
         }
     }
 
@@ -383,6 +392,7 @@ class AreaDirector(
                         return
                     }
                 }
+                is SessionKey.Team -> Unit // wired with team rounds (v3)
             }
             retries += Retry(now + RETRY_MS, e.key)
             return
@@ -391,6 +401,7 @@ class AreaDirector(
         val follow = when (val k = e.key) {
             is SessionKey.Trainer -> trainers[k.owner]?.botSpawned(id, now)
             is SessionKey.Squad -> squads[k]?.botSpawned(id, now)
+            is SessionKey.Team -> null // wired with team rounds (v3)
         }
         work.addAll(follow ?: listOf(Effect.RemoveBot(id)))
     }

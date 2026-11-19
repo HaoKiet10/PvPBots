@@ -166,6 +166,7 @@ class BotController(
         target = when (val k = key) {
             is SessionKey.Trainer -> PerceptionBuilder.livingTarget(bot, k.owner)
             is SessionKey.Squad -> BotProfiler.timed(Phase.SCAN) { PerceptionBuilder.allyTarget(bot, area.bounds, isBot) }
+            is SessionKey.Team -> null // wired with team rounds (v3)
         }
         targetView = target?.let(PerceptionBuilder::targetView)
         followPos = if (role == Role.ALLY) PerceptionBuilder.followPos(bot, area.bounds, isBot) else null

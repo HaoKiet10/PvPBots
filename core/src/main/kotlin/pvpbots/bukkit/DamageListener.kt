@@ -34,6 +34,7 @@ class DamageListener(private val manager: BotManager) : Listener {
             return when (val k = r.key) {
                 is SessionKey.Trainer -> Party.Trainer(r.id, k.owner)
                 is SessionKey.Squad -> Party.Ally(r.id)
+                is SessionKey.Team -> Party.Other // wired with team rounds (v3)
             }
         }
         return when (e) {

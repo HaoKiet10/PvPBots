@@ -1,3 +1,3 @@
 package pvpbots.session
 
-enum class Role { TRAINER, ALLY }
+enum class Role { TRAINER, ALLY, TEAM, BOSS }
