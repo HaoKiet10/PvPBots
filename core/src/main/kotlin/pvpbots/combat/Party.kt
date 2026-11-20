@@ -6,6 +6,7 @@ import pvpbots.combat.Party.RealPlayer
 import pvpbots.combat.Party.TeamBot
 import pvpbots.combat.Party.Trainer
 import pvpbots.team.Side
+import pvpbots.team.TeamSeat
 import java.util.UUID
 
 sealed interface Party {
@@ -23,8 +24,12 @@ sealed interface Party {
 
 object DamagePolicy {
     /**
-     * [sideOf] gives (arena, side) for any player or bot seated in a running team round; [bossArenaOf] the boss arena a
-     * real player stands in (inside its region and its round wall), or null.
+     * [sideOf] gives the seat (arena, side, fighting) of any player or bot seated in a running team round; [bossArenaOf]
+     * the boss arena a real player stands in (inside its region and its round wall), or null.
+     *
+     * Team rounds: seated enemies (players or filler bots) hurt each other only while their round is FIGHTING; before
+     * the fight (waiting for fillers, countdown) and during the rematch wait nobody seated is hurt by anyone seated.
+     * Seated and unseated never hurt each other. A filler bot the round no longer lists is never fighting.
      *
      * Bosses: a boss and a real player inside its arena hurt each other (the boss's own health is a plugin pool, see
      * the damage listener); bosses never hurt bots and bots never hurt bosses; two real players never hurt each other
@@ -33,7 +38,7 @@ object DamagePolicy {
     fun allow(
         attacker: Party,
         victim: Party,
-        sideOf: (UUID) -> Pair<String, Side>?,
+        sideOf: (UUID) -> TeamSeat?,
         bossArenaOf: (UUID) -> String?,
     ): Boolean {
         if (attacker is Boss || victim is Boss) {
@@ -46,7 +51,7 @@ object DamagePolicy {
         val a = seat(attacker, sideOf)
         val v = seat(victim, sideOf)
         if (attacker is TeamBot || victim is TeamBot || (a != null && v != null) || (attacker is RealPlayer && victim is RealPlayer && (a != null || v != null))) {
-            return a != null && v != null && a.first == v.first && a.second != v.second
+            return a != null && v != null && a.arena == v.arena && a.side != v.side && a.fighting && v.fighting
         }
         if (attacker is Trainer || victim is Trainer) {
             return (attacker is Trainer && victim is RealPlayer && victim.id == attacker.owner) ||
@@ -57,8 +62,8 @@ object DamagePolicy {
         return true
     }
 
-    private fun seat(p: Party, sideOf: (UUID) -> Pair<String, Side>?): Pair<String, Side>? = when (p) {
-        is TeamBot -> p.arena to p.side
+    private fun seat(p: Party, sideOf: (UUID) -> TeamSeat?): TeamSeat? = when (p) {
+        is TeamBot -> TeamSeat(p.arena, p.side, sideOf(p.botId)?.fighting ?: false)
         is RealPlayer -> sideOf(p.id)
         else -> null
     }

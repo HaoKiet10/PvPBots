@@ -456,4 +456,42 @@ class AreaDirectorTest {
         assertEquals(0, slots.used())
         assertEquals(0, d.teamCount())
     }
+
+    // ---- fillers lost before the fight (final review I1/I2) ----
+
+    private fun fillerLostBeforeFight(lose: (UUID) -> Unit) {
+        director(10, spawnsPerTick = 1)
+        val team3 = TEAM.copy(seats = 3)
+        enter(P1, team3); enter(P2, team3) // 4 fillers granted, one spawned per tick
+        d.tick(100)
+        assertEquals(2, port.teamSpawns.size)
+        lose(port.teamSpawns[0].botId)
+        d.tick(300); d.tick(400)
+        assertTrue(port.placements.isEmpty()) // 3 alive: still waiting
+        d.tick(500)
+        assertEquals(5, port.teamSpawns.size) // the lost filler was replaced
+        assertEquals(setOf(P1, P2), port.placements.map { it.first }.toSet())
+        assertEquals(4, slots.used())
+        d.tick(3600)
+        assertTrue(port.teamSpawns.drop(1).all { d.fighting(it.botId) })
+    }
+
+    @Test fun teamFillerKilledBeforeFight_isReplaced() = fillerLostBeforeFight { d.onBotDeath(it, 200) }
+
+    @Test fun teamFillerFailedBeforeFight_isReplaced() = fillerLostBeforeFight { d.onBotFailed(it, 200) }
+
+    @Test fun teamShrink_keepsSpawnGrantedJustBeforeTheTick() {
+        director(2)
+        enter(P3, ARENA) // holds one slot
+        enter(P1, TEAM) // its trainer holds the other
+        enter(P2, TEAM) // round: one filler spawned, one queued
+        assertEquals(1, port.teamSpawns.size)
+        d.onAreaChange(P3, ARENA, null, 10_000) // frees a slot: the queued filler is granted, its spawn pending
+        d.tick(10_000) // the shrink is due on this very tick
+        assertEquals(2, port.teamSpawns.size)
+        assertEquals(setOf(P1, P2), port.placements.map { it.first }.toSet())
+        d.tick(13_100)
+        assertTrue(port.teamSpawns.all { d.fighting(it.botId) })
+        assertEquals(2, slots.used())
+    }
 }

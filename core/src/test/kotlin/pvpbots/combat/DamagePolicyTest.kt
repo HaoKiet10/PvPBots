@@ -8,6 +8,7 @@ import pvpbots.combat.Party.RealPlayer
 import pvpbots.combat.Party.TeamBot
 import pvpbots.combat.Party.Trainer
 import pvpbots.team.Side
+import pvpbots.team.TeamSeat
 import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertFalse
@@ -18,9 +19,9 @@ class DamagePolicyTest {
     private val owner = UUID(3, 2)
     private val other = UUID(3, 3)
 
-    private val none: (UUID) -> Pair<String, Side>? = { null }
+    private val none: (UUID) -> TeamSeat? = { null }
 
-    private fun allow(a: Party, v: Party, sideOf: (UUID) -> Pair<String, Side>? = none): Boolean =
+    private fun allow(a: Party, v: Party, sideOf: (UUID) -> TeamSeat? = none): Boolean =
         DamagePolicy.allow(a, v, sideOf) { null }
 
     @Test
@@ -61,11 +62,14 @@ class DamagePolicyTest {
     private val p2 = UUID(3, 21)
     private val p3 = UUID(3, 22)
     private val outsider = UUID(3, 23)
-    private val sides = mapOf(
-        p1 to ("arena" to Side.A), p2 to ("arena" to Side.A), p3 to ("arena" to Side.B),
-        b1 to ("arena" to Side.A), b2 to ("arena" to Side.B),
+    private fun seats(fighting: Boolean) = mapOf(
+        p1 to TeamSeat("arena", Side.A, fighting), p2 to TeamSeat("arena", Side.A, fighting), p3 to TeamSeat("arena", Side.B, fighting),
+        b1 to TeamSeat("arena", Side.A, fighting), b2 to TeamSeat("arena", Side.B, fighting),
     )
-    private val sideOf: (UUID) -> Pair<String, Side>? = { sides[it] }
+    private val sides = seats(true)
+    private val sideOf: (UUID) -> TeamSeat? = { sides[it] }
+    private val notFighting = seats(false)
+    private val sideOfNotFighting: (UUID) -> TeamSeat? = { notFighting[it] }
 
     @Test
     fun teamBots_noFriendlyFire() {
@@ -100,6 +104,25 @@ class DamagePolicyTest {
         assertFalse(allow(RealPlayer(outsider), RealPlayer(p3), sideOf))
         // outside team rounds nothing changes
         assertTrue(allow(RealPlayer(outsider), RealPlayer(UUID(3, 24)), sideOf))
+    }
+
+    @Test
+    fun seatedEnemies_onlyHurtEachOtherWhileFighting() {
+        val a1 = TeamBot(b1, "arena", Side.A)
+        val bb = TeamBot(b2, "arena", Side.B)
+        assertFalse(allow(RealPlayer(p1), RealPlayer(p3), sideOfNotFighting)) // enemy players before the fight
+        assertFalse(allow(RealPlayer(p3), RealPlayer(p1), sideOfNotFighting))
+        assertFalse(allow(a1, bb, sideOfNotFighting)) // enemy bots
+        assertFalse(allow(bb, a1, sideOfNotFighting))
+        assertFalse(allow(a1, RealPlayer(p3), sideOfNotFighting)) // bot <-> enemy player
+        assertFalse(allow(RealPlayer(p3), a1, sideOfNotFighting))
+        assertFalse(allow(RealPlayer(p1), RealPlayer(p2), sideOfNotFighting)) // teammates: still never
+        // seated <-> unseated stays blocked
+        assertFalse(allow(RealPlayer(p3), RealPlayer(outsider), sideOfNotFighting))
+        assertFalse(allow(RealPlayer(outsider), RealPlayer(p3), sideOfNotFighting))
+        assertFalse(allow(a1, Mob, sideOfNotFighting))
+        // a team bot the round no longer knows (removed surplus filler) is never in the fight
+        assertFalse(allow(TeamBot(UUID(3, 14), "arena", Side.B), RealPlayer(p1), sideOf))
     }
 
     private val inArena: (UUID) -> String? = { if (it == owner) "pit" else if (it == other) "cave" else null }

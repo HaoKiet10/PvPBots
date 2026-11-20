@@ -67,8 +67,8 @@ internal class TeamSelfTest(private val t: SelfTest, private val plugin: PvpBots
         val damager = (event.damager as? Projectile)?.shooter as? Entity ?: event.damager
         val a = director.teamSideOf(damager.uniqueId) ?: return
         val v = director.teamSideOf(event.entity.uniqueId) ?: return
-        if (a.first != v.first) return
-        if (a.second == v.second) {
+        if (a.arena != v.arena) return
+        if (a.side == v.side) {
             if (event.isCancelled) friendlyBlocked++ else friendlyLive++
         } else if (!event.isCancelled && event.finalDamage > 0.0) {
             enemyLive++
@@ -147,7 +147,7 @@ internal class TeamSelfTest(private val t: SelfTest, private val plugin: PvpBots
         // Round 2: all three seated.
         val seated = waitUntil(1200) { ds.all { director.teamSideOf(it.id) != null } }
         val base = ds.map { stored(it.bukkit) }
-        val sides = ds.map { director.teamSideOf(it.id)?.second }
+        val sides = ds.map { director.teamSideOf(it.id)?.side }
         val sumA = ds.indices.filter { sides[it] == Side.A }.sumOf { ratings[it] }
         val sumB = ds.indices.filter { sides[it] == Side.B }.sumOf { ratings[it] }
         val gap = ratings.max() - ratings.min()
@@ -164,7 +164,7 @@ internal class TeamSelfTest(private val t: SelfTest, private val plugin: PvpBots
             side to members
         }
         val padsOk = padReport.all { (_, m) -> m.size == 5 && m.none { it < 0 } && m.toSet().size == 5 } &&
-            fillers.all { director.teamSideOf(it.id)?.second == it.side }
+            fillers.all { director.teamSideOf(it.id)?.side == it.side }
         // Fight.
         val fighting = fillers.firstOrNull()?.let { waitUntil(200) { director.fighting(it.id) } } ?: -1
         yield(10)
@@ -281,7 +281,7 @@ internal class TeamSelfTest(private val t: SelfTest, private val plugin: PvpBots
         for (d in ds) director.onAreaChange(d.id, null, b.area, t.nowMs())
         val fillersReady = waitUntil(400) { teamBots(b.rec.regionId).size == 4 }
         yield(3)
-        val sides = ds.map { director.teamSideOf(it.id)?.second }
+        val sides = ds.map { director.teamSideOf(it.id)?.side }
         val pads = ds.indices.map { i -> sides[i]?.let { padOf(b.rec, it, ds[i].bukkit) } ?: -1 }
         val padsOk = sides.all { it != null } && pads.all { it >= 0 }
         val kitAfterPlace = ds.map { kitMismatch(it.bukkit, "iron") }

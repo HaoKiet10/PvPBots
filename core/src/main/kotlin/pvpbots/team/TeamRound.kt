@@ -20,8 +20,12 @@ import java.util.UUID
  *    A bot nobody wants (wrong state, side already full) comes back as [Effect.RemoveBot].
  *  - [spawnFailed]: the spawn failed; the slot is given back and one new slot is requested.
  *  - [playerLeft], [playerDied], [playerEntered], [botDied]: arena events. A player who died or walked in
- *    mid-round waits for the next round ([Effect.Wait]); players who waited are seated first.
- *  - [tick]: drives countdown, time limit, slot shrinking and the rematch delay.
+ *    mid-round waits for the next round ([Effect.Wait]); players who waited are seated first. A filler lost before
+ *    the fight (died, or dropped after a failure) is replaced like a failed spawn; in COUNTDOWN the round goes back
+ *    to WAITING_SLOTS, so a fight never starts a bot short.
+ *  - [tick]: drives countdown, time limit, slot shrinking and the rematch delay. Every [SHRINK_TIMEOUT_MS] without
+ *    all fillers, the round shrinks to the largest even size its granted slots (spawned or still pending) allow;
+ *    only queued requests are cancelled ([Effect.CancelQueuedSlots]), pending spawns go on.
  *
  * Results: when a round that reached FIGHTING ends, every seated player who did not leave (dead ones included) gets
  * [Effect.TeamResult]; players still online get a title. Leavers get no result. A round that never fought, or whose players all left,
@@ -54,10 +58,13 @@ class TeamRound(val key: SessionKey.Team, area: AreaRef, private val t: Timings)
     private val gone = HashSet<UUID>()
 
     private val want = mutableMapOf(Side.A to 0, Side.B to 0)
+    /**
+     * Slots granted per side and still held by this round (live fillers plus spawns still pending); never below the
+     * live fillers. Reset to the live fillers when the countdown starts: a spawn still pending then is dropped.
+     */
     private val requested = mutableMapOf(Side.A to 0, Side.B to 0)
     private val bots = mutableMapOf(Side.A to ArrayList<UUID>(), Side.B to ArrayList<UUID>())
-    private var granted = 0
-    private var shrunk = false
+    private var shrinkDueMs = 0L
 
     fun state(): State = state
     fun seated(): List<UUID> = team.getValue(Side.A) + team.getValue(Side.B)
@@ -100,7 +107,6 @@ class TeamRound(val key: SessionKey.Team, area: AreaRef, private val t: Timings)
         val open = Side.entries.filter { requested.getValue(it) < want.getValue(it) }
         val side = open.minWithOrNull(compareBy({ team.getValue(it).size + requested.getValue(it) }, { it.ordinal }))
             ?: return emptyList()
-        granted++
         val pad = team.getValue(side).size + requested.getValue(side)
         requested[side] = requested.getValue(side) + 1
         return listOf(Effect.SpawnTeamBot(key, side, botRating.getValue(side), pad))
@@ -108,17 +114,23 @@ class TeamRound(val key: SessionKey.Team, area: AreaRef, private val t: Timings)
 
     fun botSpawned(side: Side, botId: UUID, nowMs: Long): List<Effect> {
         if (state != State.WAITING_SLOTS || bots.getValue(side).size >= want.getValue(side)) {
+            // A surplus filler (side already full, e.g. after a shrink): its slot no longer counts for this round.
+            if (state == State.WAITING_SLOTS || state == State.COUNTDOWN) dropRequest(side)
             return listOf(Effect.RemoveBot(botId))
         }
         bots.getValue(side) += botId
+        if (requested.getValue(side) < bots.getValue(side).size) requested[side] = bots.getValue(side).size
         return if (allSpawned()) startCountdown(nowMs) else emptyList()
     }
 
     fun spawnFailed(side: Side, nowMs: Long): List<Effect> {
         if (state != State.WAITING_SLOTS) return emptyList()
-        requested[side] = maxOf(0, requested.getValue(side) - 1)
-        granted = maxOf(0, granted - 1)
+        dropRequest(side)
         return listOf(Effect.RequestSlots(key, 1))
+    }
+
+    private fun dropRequest(side: Side) {
+        requested[side] = maxOf(bots.getValue(side).size, requested.getValue(side) - 1)
     }
 
     fun playerLeft(player: UUID, nowMs: Long): List<Effect> {
@@ -152,10 +164,23 @@ class TeamRound(val key: SessionKey.Team, area: AreaRef, private val t: Timings)
         return listOf(Effect.Wait(player))
     }
 
+    /** A filler died or was dropped after a failure. Before the fight it is replaced (see the class doc). */
     fun botDied(botId: UUID, nowMs: Long): List<Effect> {
-        if (bots.values.none { botId in it }) return emptyList()
-        bots.values.forEach { it.remove(botId) }
-        return if (state == State.FIGHTING) checkEnd(nowMs) else emptyList()
+        val side = Side.entries.firstOrNull { botId in bots.getValue(it) } ?: return emptyList()
+        bots.getValue(side).remove(botId)
+        return when (state) {
+            State.FIGHTING -> checkEnd(nowMs)
+            State.WAITING_SLOTS, State.COUNTDOWN -> {
+                if (state == State.COUNTDOWN) {
+                    state = State.WAITING_SLOTS
+                    phaseStartMs = nowMs
+                    shrinkDueMs = nowMs + SHRINK_TIMEOUT_MS
+                }
+                dropRequest(side)
+                listOf(Effect.RequestSlots(key, 1))
+            }
+            else -> emptyList()
+        }
     }
 
     fun tick(nowMs: Long): List<Effect> = when (state) {
@@ -192,10 +217,9 @@ class TeamRound(val key: SessionKey.Team, area: AreaRef, private val t: Timings)
             requested[it] = 0
             bots.getValue(it).clear()
         }
-        granted = 0
-        shrunk = false
         state = State.WAITING_SLOTS
         phaseStartMs = nowMs
+        shrinkDueMs = nowMs + SHRINK_TIMEOUT_MS
         val out = mutableListOf<Effect>()
         split.waiting.forEach { out += Effect.Wait(it) }
         val fillers = want.values.sum()
@@ -208,24 +232,33 @@ class TeamRound(val key: SessionKey.Team, area: AreaRef, private val t: Timings)
     private fun startCountdown(nowMs: Long): List<Effect> {
         state = State.COUNTDOWN
         phaseStartMs = nowMs
+        // Spawns still pending now are surplus: the director drops them (no spawn outside WAITING_SLOTS).
+        Side.entries.forEach { requested[it] = bots.getValue(it).size }
         return Side.entries.flatMap { side ->
             team.getValue(side).filter { it in inArena }.mapIndexed { pad, p -> Effect.PlacePlayer(p, side, pad) }
         }
     }
 
-    /** After [SHRINK_TIMEOUT_MS] without all slots: the largest per-side size the granted slots allow. */
+    /**
+     * Every [SHRINK_TIMEOUT_MS] without all fillers: the largest per-side size the slots each side holds (live fillers
+     * plus spawns still pending) allow. Only queued requests are cancelled; a pending spawn the smaller round does not
+     * need is removed when it arrives ([botSpawned]). Repeats while fillers are still missing (a filler that fails
+     * after a shrink is re-requested; if that slot never comes, the next shrink drops it), down to players only.
+     */
     private fun shrinkIfDue(nowMs: Long): List<Effect> {
-        if (shrunk || nowMs - phaseStartMs < SHRINK_TIMEOUT_MS) return emptyList()
-        val pa = team.getValue(Side.A).size
-        val pb = team.getValue(Side.B).size
-        val s = (seats downTo maxOf(pa, pb)).firstOrNull { 2 * it - (pa + pb) <= granted } ?: return emptyList()
-        shrunk = true
-        want[Side.A] = s - pa
-        want[Side.B] = s - pb
-        val out = mutableListOf<Effect>(Effect.CancelSlotRequests(key))
+        if (nowMs < shrinkDueMs) return emptyList()
+        shrinkDueMs = nowMs + SHRINK_TIMEOUT_MS
+        val p = Side.entries.associateWith { team.getValue(it).size }
+        val s = (seats downTo p.values.max()).firstOrNull { s -> Side.entries.all { s - p.getValue(it) <= requested.getValue(it) } }
+            ?: return emptyList()
+        Side.entries.forEach { want[it] = minOf(want.getValue(it), s - p.getValue(it)) }
+        val out = mutableListOf<Effect>(Effect.CancelQueuedSlots(key))
         for (side in Side.entries) {
             val list = bots.getValue(side)
-            while (list.size > want.getValue(side)) out += Effect.RemoveBot(list.removeAt(list.lastIndex))
+            while (list.size > want.getValue(side)) {
+                out += Effect.RemoveBot(list.removeAt(list.lastIndex))
+                dropRequest(side)
+            }
         }
         if (allSpawned()) out += startCountdown(nowMs)
         return out

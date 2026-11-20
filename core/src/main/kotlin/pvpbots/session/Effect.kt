@@ -9,6 +9,8 @@ import java.util.UUID
 sealed interface Effect {
     data class RequestSlots(val key: SessionKey, val n: Int) : Effect
     data class CancelSlotRequests(val key: SessionKey) : Effect
+    /** Only [key]'s queued slot requests are dropped; granted slots and spawns already pending are kept. */
+    data class CancelQueuedSlots(val key: SessionKey) : Effect
     data class SpawnBot(val key: SessionKey, val role: Role, val difficulty: Difficulty?, val nearPlayer: UUID) : Effect
     data class RoundEnded(val owner: UUID, val outcome: Outcome) : Effect
     data class RemoveBot(val botId: UUID) : Effect

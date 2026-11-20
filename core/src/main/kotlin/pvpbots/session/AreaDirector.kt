@@ -2,6 +2,7 @@ package pvpbots.session
 
 import pvpbots.slots.BotSlots
 import pvpbots.team.Side
+import pvpbots.team.TeamSeat
 import pvpbots.team.TeamRound
 import java.util.UUID
 
@@ -216,9 +217,9 @@ class AreaDirector(
     /** Granted spawns waiting for their turn (rate limit) or for a dead owner to respawn, for status output. */
     fun pendingSpawns(): Int = pending.size + held.values.sumOf { it.size }
 
-    /** (arena = region id, side) of a player or bot seated in a running team round; null for anyone else. Read-only. */
-    fun teamSideOf(id: UUID): Pair<String, Side>? {
-        for ((k, r) in teams) r.sideOf(id)?.let { return k.regionId to it }
+    /** The seat (arena = region id, side, fighting) of a player or bot in a running team round; null for anyone else. Read-only. */
+    fun teamSideOf(id: UUID): TeamSeat? {
+        for ((k, r) in teams) r.sideOf(id)?.let { return TeamSeat(k.regionId, it, r.state() == TeamRound.State.FIGHTING) }
         return null
     }
 
@@ -445,6 +446,7 @@ class AreaDirector(
                 slots.cancel(e.key)
                 dropPending(e.key)
             }
+            is Effect.CancelQueuedSlots -> slots.cancel(e.key)
             is Effect.SpawnBot -> pending.addLast(e)
             is Effect.RemoveBot -> {
                 guarded("removing bot ${e.botId}") { port.remove(e.botId) }
