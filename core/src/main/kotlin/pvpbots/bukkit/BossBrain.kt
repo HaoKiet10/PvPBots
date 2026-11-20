@@ -4,6 +4,7 @@ import org.bukkit.Location
 import org.bukkit.entity.AbstractArrow
 import org.bukkit.entity.Player
 import pvpbots.boss.BossType
+import pvpbots.boss.CheeseGuard
 import pvpbots.boss.Move
 import pvpbots.boss.MoveSelector
 import pvpbots.boss.MoveType
@@ -16,15 +17,16 @@ import kotlin.random.Random
  * The boss's decisions (spec 5.4, 5.5): aggro, move choice, tell -> move -> recovery, phases with their roar, and the
  * cheese guards. [body] does the walking and looking; [BossMoves] the effects. Main thread only.
  *
- * - Aggro: re-picked every 2 s (or when the target is gone): most damage in the last 10 s, else the nearest
- *   participant; each pick has a 20% chance to go to a random participant instead. Only participants are targets.
+ * - Aggro: re-picked every 2 s while chasing (mid-move only when the target is gone): most damage in the last 10 s,
+ *   else the nearest participant; each pick has a 20% chance to go to a random participant instead. Only
+ *   participants are targets.
  * - Chase: a usable move ([MoveSelector.pick] with distance and cooldowns) starts its tell
  *   ([Phase.scaledTelegraph], never under 10 ticks for a damaging move); else walk to the target, strafe when close.
  * - Recovery after a move: slowed to half speed, takes 1.5x damage ([recovering]).
  * - Phases: on crossing a threshold the bar colour changes, the moveset changes and (if set) the boss roars:
  *   invulnerable ([roaring]) and pushing players back.
- * - Guards: a target more than 4 blocks above, or no progress (closer by 0.5 blocks, or a move) for 3 s, starts a
- *   leap or ranged move at once, cooldown and range aside.
+ * - Guards ([CheeseGuard]): a target more than 4 blocks above, or out of reach on foot for 3 s (no horizontal
+ *   progress, no move), starts a leap or ranged move at once, cooldown and range aside. Within reach never triggers.
  */
 class BossBrain(
     private val type: BossType,
@@ -51,8 +53,7 @@ class BossBrain(
     private var active: List<Move> = PhaseTracker.activeMoves(type.moves, type.phases, -1)
     private var pendingRoar = false
     private var forced: Move? = null
-    private var progressTick = 0L
-    private var bestDist = Double.MAX_VALUE
+    private val guard = CheeseGuard()
     private var lastPick = Long.MIN_VALUE / 2
     private var strafeDir = 1f
     private var speed = Double.NaN
@@ -83,6 +84,11 @@ class BossBrain(
         return true
     }
 
+    /** Self-test: every move is on cooldown for [ticks] more ticks. */
+    fun cooldownAll(ticks: Int) {
+        for (m in type.moves) readyAt[m.id] = tick + ticks
+    }
+
     /** [by] took [amount] off the boss's pool: counts towards aggro for 10 s. */
     fun recordDamage(by: UUID, amount: Double) {
         if (amount > 0.0) dealt.addLast(Dealt(by, amount, tick))
@@ -98,7 +104,7 @@ class BossBrain(
     /** The director put the boss back at the centre: a move in flight is dropped (no damage). */
     fun onTeleportedBack() {
         if (state == State.EXEC) finishMove()
-        bestDist = Double.MAX_VALUE
+        guard.reset(tick)
     }
 
     /** The boss is going away: its arrows go too. */
@@ -116,7 +122,7 @@ class BossBrain(
         alive = participants.filter { it.isValid && !it.isDead && it.world == boss.world }
         updatePhase()
         val cur = target
-        if (cur == null || cur !in alive || tick - lastPick >= PICK_TICKS) pickTarget(boss)
+        if (cur == null || cur !in alive || (state == State.CHASE && tick - lastPick >= PICK_TICKS)) pickTarget(boss)
         applySpeed()
         val t = target
         when (state) {
@@ -141,15 +147,11 @@ class BossBrain(
         val bl = boss.location
         val tl = t.location
         val dist = bl.distance(tl)
-        if (dist < bestDist - PROGRESS) {
-            bestDist = dist
-            progressTick = tick
-        }
-        if (tl.y - bl.y > ABOVE || tick - progressTick >= STUCK_TICKS) {
-            guardMove()?.let {
-                tracer()?.invoke("guard ${it.id} (${if (tl.y - bl.y > ABOVE) "target above" else "no progress"})")
-                return start(it, t)
-            }
+        val reason = guard.check(tick, kotlin.math.hypot(tl.x - bl.x, tl.z - bl.z), tl.y - bl.y)
+        if (reason != null) {
+            val m = guardMove()
+            tracer()?.invoke("guard ${m.id} $reason")
+            return start(m, t)
         }
         val cooldowns = HashMap<String, Int>(active.size)
         for (m in active) cooldowns[m.id] = ((readyAt[m.id] ?: 0L) - tick).toInt()
@@ -164,8 +166,7 @@ class BossBrain(
         total = (phaseNow() ?: NEUTRAL).scaledTelegraph(m)
         left = total
         state = State.TELL
-        progressTick = tick
-        bestDist = Double.MAX_VALUE
+        guard.reset(tick)
         if (total <= 0) return startExec(t)
         t?.let { body.face(it) }
         body.stand()
@@ -206,7 +207,7 @@ class BossBrain(
         val m = move
         run = null
         move = null
-        progressTick = tick
+        guard.reset(tick)
         if (m == null) {
             state = State.CHASE
             return
@@ -268,7 +269,7 @@ class BossBrain(
                     ?: boss.location.let { l -> alive.minByOrNull { it.location.distanceSquared(l) } }
             }
         }
-        if (target != before) bestDist = Double.MAX_VALUE
+        if (target != before) guard.reset(tick)
     }
 
     private fun cleanArrows() {
@@ -298,9 +299,6 @@ class BossBrain(
         const val AGGRO_TICKS = 200L
         const val PICK_TICKS = 40L
         const val RANDOM_AGGRO = 0.2
-        const val STUCK_TICKS = 60L
-        const val ABOVE = 4.0
-        const val PROGRESS = 0.5
         const val CLOSE = 2.8
         const val STRAFE_FLIP = 40L
         const val RECOVERY_SLOW = 0.5

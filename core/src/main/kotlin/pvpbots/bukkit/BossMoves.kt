@@ -108,11 +108,12 @@ object BossMoves {
     private fun hurt(ctx: MoveContext, move: Move, p: Player): Boolean {
         if (move.damage <= 0.0 || p.isDead || !p.isValid) return false
         p.noDamageTicks = 0
-        p.lastDamageCause = null
+        val before = p.lastDamageCause
         p.damage(move.damage, ctx.boss)
         ctx.trace { "hit ${move.id} ${p.name}" }
-        // Bukkit records the cause only for a damage event that was not cancelled.
-        return (p.lastDamageCause as? EntityDamageByEntityEvent)?.damager == ctx.boss
+        // Bukkit records the cause only for a damage event that was not cancelled: a new event object means it landed.
+        val now = p.lastDamageCause
+        return now !== before && (now as? EntityDamageByEntityEvent)?.damager == ctx.boss
     }
 
     private class Combo(val ctx: MoveContext, val move: Move, val target: Player) : MoveRun {

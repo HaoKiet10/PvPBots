@@ -208,7 +208,8 @@ internal class BossSelfTest(private val t: SelfTest, private val plugin: PvpBots
             waitHealing(ds, 80) { boss.encounterState(name) == BossEncounter.State.FIGHT }
             val h4 = boss.health(name)
             val want4 = type.baseHealth * (1 + type.healthPerExtraPlayer * 3)
-            val raised = h4 != null && abs(h4.max - want4) < 1e-6
+            val max4 = h4?.max
+            val raised = max4 != null && abs(max4 - want4) < 1e-6
             val bossP = bossOf(name)?.player
             for (d in listOf(d1, d2, d3)) d.bukkit.inventory.setItemInMainHand(ItemStack(Material.IRON_SWORD))
             val xpBefore = ds.associate { it.id to it.bukkit.totalExperience }
@@ -276,7 +277,7 @@ internal class BossSelfTest(private val t: SelfTest, private val plugin: PvpBots
                 raised && realHit > 0.0 && bossFull && afterEnv == afterHit && pvpBlocked && outIgnored && bossAttacked >= 0 && dead >= 0 && gone &&
                     events.size == 1 && winners == setOf(d1.id, d2.id) && events.single().bossType == "ashblade" && events.single().arena == name &&
                     lootOk && xpOk && cmdOk && titled && cooldownSeen >= 0 && barOk2 && stateLine.startsWith("cooldown") && !bossDuringCooldown && back >= 0,
-                "max raised by a 4th player $raised (${h4?.max}); a real hit took ${"%.2f".format(realHit)} from the pool, boss own health full $bossFull; " +
+                "max raised by a 4th player $raised ($max4); a real hit took ${"%.2f".format(realHit)} from the pool, boss own health full $bossFull; " +
                     "environment damage changed the pool ${afterEnv != afterHit}; pvp blocked $pvpBlocked; hit from outside ignored $outIgnored; " +
                     "boss attacked a dummy after $bossAttacked ticks; VICTORY after $dead ticks, boss and bar gone $gone; events ${events.size}, " +
                     "winners ${events.singleOrNull()?.winners?.map { it.name }}; apples ${ds.map { apples(it) }}; xp $xpGain; commands $commands; " +
@@ -450,6 +451,18 @@ internal class BossSelfTest(private val t: SelfTest, private val plugin: PvpBots
         }
         world.getEntitiesByClass(Arrow::class.java).filter { (it.shooter as? Entity)?.uniqueId == d2.id }.forEach { it.remove() }
         val arrowIgnored = arrowHits > 0 && boss.health(name)?.current == pool1
+        // (e) target in melee reach, every move on cooldown for 7 s: no guard move for 5 s (it strafes), a move after the cooldown.
+        calm()
+        val bl3 = bp.location
+        d1.bukkit.teleport(bl3.clone().add(bl3.direction.setY(0).normalize().multiply(2.0)).apply { y = standY })
+        brain.cooldownAll(140)
+        val t2 = Bukkit.getCurrentTick()
+        yield(100)
+        heal(ds)
+        val earlyMoves = timed.filter { (tk, s) -> tk >= t2 && (s.startsWith("tell ") || s.startsWith("guard ")) }.map { it.second }
+        val reachDist = hypot(bp.location.x - d1.bukkit.location.x, bp.location.z - d1.bukkit.location.z)
+        val moveAfter = waitHealing(ds, 80) { timed.any { (tk, s) -> tk >= t2 + 140 && s.startsWith("tell ") } }
+        val noGuardInReach = earlyMoves.isEmpty() && reachDist <= 3.5 && moveAfter >= 0
         // (d) target on a 6-block pillar -> leap or ranged tell within 3 s.
         calm()
         val px = centre.x + 8
@@ -469,10 +482,11 @@ internal class BossSelfTest(private val t: SelfTest, private val plugin: PvpBots
         d1.bukkit.teleport(spot(0.0, -6.0))
         t.check(
             "B7 cheese guards",
-            back && lavaEvents.isNotEmpty() && lavaAllCancelled && pool0 != null && poolAfterLava == pool0 && ownFull && arrowIgnored && guarded >= 0,
+            back && lavaEvents.isNotEmpty() && lavaAllCancelled && pool0 != null && poolAfterLava == pool0 && ownFull && arrowIgnored && noGuardInReach && guarded >= 0,
             "teleported 30 blocks out: ${"%.2f".format(backDist)} blocks from the centre 2 ticks later; lava/fire damage events ${lavaEvents.size}, " +
                 "all cancelled $lavaAllCancelled, pool $pool0 -> $poolAfterLava, own health full $ownFull; arrows from outside the region reaching the boss " +
-                "$arrowHits, pool unchanged ${boss.health(name)?.current == pool1}; target on a 6-block pillar: first tell '$guardTell', " +
+                "$arrowHits, pool unchanged ${boss.health(name)?.current == pool1}; in reach with all moves on cooldown: moves in the first 5 s " +
+                "$earlyMoves, distance after ${"%.2f".format(reachDist)}, a move ${moveAfter} ticks after the cooldown ended; target on a 6-block pillar: first tell '$guardTell', " +
                 "leap/ranged tell after $guarded ticks",
         )
     }
