@@ -125,3 +125,69 @@ Needs two testers: a beginner and a strong PvP player, each with a fresh rating 
    Remove the flag again (`/rg flag pvpbots_feel pvpbot-difficulty`) to return to adaptive.
 6. Report any case where the bot clearly mismatches (always wins or always loses after round 3), with the starting
    gear, so `skill.*` in `config.yml` can be tuned.
+
+---
+
+# v3 manual checks (team rounds, boss arenas)
+
+Needs real clients on the same Minecraft version as the dev server. For C you need 2-4 testers (a second account
+or friends); for D you need groups of 1, 2 and 4. Op yourself; use survival mode.
+
+## C2. Team-round walkthrough (2-4 real players)
+
+1. Build `/pvpbots arena create teams team confirm` (a `squad` arena also works with 3 per side). Optional second
+   run with a kit: `/pvpbots arena kit teams iron`.
+2. **One player:** the first tester walks in: the usual personal trainer (3 s countdown, then a 1v1). Nothing team-like.
+3. **Second player enters during the 1v1.** The 1v1 ends at once with no title and no rating change, and a team
+   round starts: both players are teleported onto pads (one per side where possible), the countdown runs, and each side
+   is filled with bots to 5 (squad: 3). Check: the two humans are on opposite
+   sides and both sides have the same number of fighters.
+4. **No friendly fire:** hit a teammate (human or bot): no damage. Enemies take damage. Bots fight bots as well as you.
+5. **Waiting:** a third tester walks in mid-fight: action bar "Next round starts soon", no trainer for them. After the
+   round ends and the rematch delay (5 s), they are seated in the new split (waiting players first).
+6. **Death:** die in a round: you are out for that round (respawn outside; walking back in makes you wait).
+7. **Result:** when a side is gone you get the title "Your team won!" or "Your team lost" (dead players too); a draw
+   at the time limit shows the draw title. The skill rating moves accordingly (win nudge up, loss nudge down).
+8. **Leave mid-round:** you get no title and are out. If everyone leaves, the bots vanish.
+9. **Bot cap:** set `max-bots: 4` in `config.yml`, `/pvpbots reload`, walk in with 2 players: after about 10 s the round
+   shrinks to the largest equal size that fits (not 5v5) instead of waiting forever. Restore `max-bots`.
+10. Kit arena (if set up): each player is stashed, given the kit, and gets items back on leaving, dying or logging out,
+    as in section B.
+
+## D. Boss feel test (groups of 1, 2 and 4)
+
+Setup: `/pvpbots boss create maw ashblade confirm` (and later `thornbow`). Testers wear full diamond with a sword,
+bow and golden apples, as in a normal survival server. Record for each group size: did the fight feel fair, how many
+deaths, how long it took.
+
+1. **Spawn:** walk in. After 3 s the boss appears at the centre with a roar and the boss bar; `/pvpbots boss list`
+   shows `fighting`. Check that the boss bar max grows with the group (1 player = base, each extra +60%).
+2. **Tells readable:** every damaging move is preceded by a visible wind-up (the boss stops, raises its weapon,
+   particles and a sound) of at least half a second. The boss has **no** plain hit without a tell. Dodge the combo,
+   jump the shockwave ring, run from the leap slam, break line of sight for the charged shot. Note any hit you did not
+   see coming.
+3. **Punish windows:** after a move the boss is slow for a moment and takes more damage; attacking then should clearly
+   shorten the fight.
+4. **Phase change** at 50%: the boss roars (invulnerable for about 2 s, pushes you back), the bar changes, and new
+   moves appear (ashblade: 5-hit combo; thornbow: double volleys and leap slam).
+5. **Deaths feel earned:** you should be able to name the move that killed you. Big moves take about 4-5 hits on
+   full diamond. Report any death you could not attribute.
+6. **Cheese hunt (try hard):** stand on the entrance wall top or a pillar, hide in a corner, hug the wall, shoot from
+   outside the region, lure the boss into the entrance, use water/lava/fall tricks, out-heal by eating gold apples
+   while trading. Expected: the boss is never stuck, never takes damage from outside, uses a leap or ranged move when it
+   cannot reach you, and trading hits without dodging loses.
+7. **Group of 2 and 4:** the boss focuses the player doing the most damage; a second player standing next to it should
+   draw attention away. Players cannot hurt each other. A late joiner raises the boss health (current health keeps its
+   fraction).
+8. **Wipe:** everyone dies or leaves: after about 10 s the boss and bar disappear; walking in again starts a full-health
+   boss.
+9. **Victory:** each winner (dealt damage, inside or died inside) gets the loot, XP and any `commands`; a tester
+   who only stood at the door gets nothing. Then the arena is quiet: action bar "The arena is quiet... returns in
+   m:ss", and the boss returns after `cooldown-seconds`. Restart the server or `/pvpbots reload` during the cooldown:
+   the cooldown is **not** remembered; the boss is available at once (expected, documented).
+10. **Busy server:** with `max-bots` already used up by trainers, walk into the boss arena: the boss bar says it is
+    waiting for a free bot slot, and the boss spawns when one frees.
+11. **Remove:** `/pvpbots boss remove maw confirm` during a fight: the boss and bar vanish, you are moved just outside
+    the entrance, and the terrain is restored exactly.
+12. Report: group size, boss type, deaths, time to kill, any move that felt unfair or unreadable, any cheese found,
+    so `bosses:` numbers can be tuned.

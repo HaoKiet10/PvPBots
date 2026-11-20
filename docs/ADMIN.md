@@ -3,7 +3,9 @@
 PvpBots adds hidden fake-player bots to WorldGuard regions: personal 1v1 **trainers** in arenas and **ally squads**
 that help players fight mobs in boss areas. Players never control bots; admins configure regions and `config.yml`.
 Since v2 the plugin can also **build arenas itself** (`/pvpbots arena create`) and trainers **adapt to each player's
-skill** automatically.
+skill** automatically. Since v3, players who meet in a `squad` or `team` arena fight as **two rating-balanced teams
+filled up with bots** (see "Team rounds"), and admins can build **boss arenas** with configurable souls-like bosses
+(see "Boss arenas").
 
 > ## Upgrading from v1: an unset `pvpbot-difficulty` now means "adaptive"
 >
@@ -27,9 +29,12 @@ skill** automatically.
 
 | Flag | Values | Default | Used by |
 |---|---|---|---|
-| `pvpbot-role` | `trainer` \| `ally` | unset = no bots | both |
+| `pvpbot-role` | `trainer` \| `ally` \| `boss` | unset = no bots | all |
 | `pvpbot-difficulty` | `easy` \| `medium` \| `hard` \| `pro` | unset: **adaptive** for `trainer` (new in v2), `medium` for `ally` | both |
 | `pvpbot-count` | integer >= 1 | `5` | ally |
+| `pvpbot-boss` | boss type id (a key of `bosses:`) | unset | boss |
+
+`boss` and `pvpbot-boss` are set by `/pvpbots boss create` on the region it builds; you do not set them by hand.
 
 ```
 /rg flag arena_1 pvpbot-role trainer
@@ -68,12 +73,13 @@ behind you. Names are 1-32 characters of `a-z`, `0-9`, `_`, `-` (upper case is l
 | `duel` | 1 | 17 x 17 | none |
 | `squad` | 3 | 25 x 25 | 4 pillars |
 | `team` | 5 | 33 x 33 | 8 pillars |
+| `boss` | 1 (entry) | round, radius 20 (41 across) | none |
 
-All presets have 5-high walls, an open roof (everything inside is cleared up to 3 blocks above the walls) and light
+`boss` is built by `/pvpbots boss create`, not by `arena create` (see "Boss arenas"). The other presets have 5-high walls, an open roof (everything inside is cleared up to 3 blocks above the walls) and light
 blocks in the floor so mobs cannot spawn inside. The trainer spawns on the nearest free team B pad, across the arena
 (if all are taken, the normal spawn search is used). Materials (floor, wall, light, pads, cover) come from
-`arenas.materials` in `config.yml`. Today every preset gives each player a personal 1v1 trainer; the extra pads are
-stored for a later team mode.
+`arenas.materials` in `config.yml`. A `duel` arena (and the first player in any arena) gives each player a personal 1v1 trainer; `squad` and `team`
+arenas run team rounds when two or more players are inside (see "Team rounds").
 
 **What `create` checks.** The preview shows `Cannot build: ...` lines and nothing is changed when:
 - the name is invalid or an arena with that name exists;
@@ -183,11 +189,198 @@ no numbers. A player's death from any cause during the fight counts as a loss. F
 (player leaves, `clear`, arena removed) change nothing. Pinned arenas (flag set) never change a rating.
 
 
+## Team rounds
+
+In **plugin-built `squad` (3 per side) and `team` (5 per side) arenas** a crowd fights as two teams. `duel` arenas and
+hand-drawn regions keep the personal 1v1 trainer.
+
+- **When a team round starts.** One player alone gets the usual 1v1 trainer. When a **second** player walks in, the
+  running 1v1 ends with **no result** (no rating change) and a shared team round starts: slots, then the countdown
+  (`trainer.countdown-seconds`), then the fight. Everyone present is split into two teams.
+- **Split rule.** Players are sorted by skill rating (highest first); each goes to the team with the lower rating
+  total, unless the other team has fewer members (team sizes differ by at most one; ties go to team A). More players
+  than seats (over 6 in `squad`, over 10 in `team`): the extra players **wait**, and at the next round the players who
+  waited are seated first.
+- **Bot fill.** Every empty seat on both sides is filled by a filler bot, so the sides are always equal. A filler bot
+  fights at its own team's average player rating (the same blend as adaptive trainers), fixed for the round: there is
+  no in-fight adjustment in team rounds. Players are teleported onto their team's pads at the start of the countdown.
+- **Bot cap and shrinking.** Each filler bot needs a `max-bots` slot. If the slots are not all there after **10 s**,
+  the round shrinks to the largest equal size the free slots allow (for example 3v3 in a `team` arena); the round
+  never starts uneven.
+- **Waiting.** A player who walks in mid-round, or dies, gets "Next round starts soon" and waits for the next round
+  (they get no trainer meanwhile). A player who leaves mid-round is out; they get no result and no title.
+- **The round.** No friendly fire: teammates (players and bots) cannot hurt each other; enemies can. The round ends
+  when one side has nobody left standing, or at `trainer.time-limit-seconds` (a draw). After
+  `trainer.rematch-delay-seconds` a new split is made with everyone present. When fewer than two players are left
+  for the next round, the team round ends and the arena goes back to personal trainers.
+- **Ratings.** Every seated player who did not leave (dead ones too) gets the team result: win = player won, loss =
+  bot won, draw = draw. The rating moves by the result nudge only (`skill.win-bonus` / `skill.loss-penalty`).
+  Rounds that never fought, or end with no result (arena removed, `/pvpbots reload`, `clear`), change nothing.
+- **Kit arenas** (`arena create ... <kit>`) work per player exactly as in "Kit arenas": stash, kit, restore.
+- **Damage.** Inside a round only members of different sides can hurt each other.
+
+## Boss arenas
+
+A boss arena is a round, plugin-built arena (inside radius 20, walls 6 high, open roof, 3-wide entrance, no cover,
+lights in the floor) holding one boss: a bot with its own gear, a plugin-side health pool and a telegraphed moveset.
+Players fight it in their own gear (no kit swap).
+
+```
+/pvpbots boss create maw ashblade            shows what would happen; nothing changes yet
+/pvpbots boss create maw ashblade confirm    builds it where you stand, entrance behind you
+/pvpbots boss remove maw [confirm]           ends its fight and restores the terrain
+/pvpbots boss list                           boss arenas: type, state (idle / intro / fighting / cooldown m:ss)
+```
+
+`/pvpbots arena list` shows boss arenas too. Permission `pvpbots.admin`. Boss arenas use the same machinery as other
+built arenas: preview and `confirm`, the same checks (containers, existing region, overlaps, world limits), snapshot
+before the first block, staged build, crash resume and exact restore (see "Arenas built by the plugin"). The boss type
+must be a key of `bosses:` (the refusal lists the valid ones). The region `pvpbots_<name>` has priority 10,
+`pvpbot-role boss`, `pvpbot-boss <type>`, `build deny` and `pvp allow` (a boss bot counts as a player to WorldGuard;
+the plugin itself blocks player-versus-player damage inside).
+
+**Encounter flow.** IDLE, INTRO, FIGHT, then VICTORY and COOLDOWN, or a RESET.
+- **Intro.** The first player (survival or adventure) inside, while the arena is not in cooldown, starts a 3 s intro;
+  the boss appears at the centre with a roar and a boss bar is shown to everyone inside.
+- **Health.** `base-health x (1 + health-per-extra-player x (players - 1))`, fixed at the intro; when more players
+  enter mid-fight the maximum rises and the current health keeps its fraction. Players leaving never lower it.
+- **Bot slot.** The boss takes one `max-bots` slot, but **only when one is free with nothing queued**. On a busy
+  server a boss may wait: the boss bar then says it is waiting for a free bot slot.
+- **Wipe (reset).** If no participant (alive, survival or adventure, inside) is left for 10 s, the boss is removed and
+  the arena returns to IDLE with full health next time. Dead players keep the normal vanilla death rules (own gear
+  drops as usual).
+- **Victory.** At 0 health: "BOSS DEFEATED" title and sound, the bar fades, rewards are given, then the cooldown.
+- **Cooldown.** For `cooldown-seconds` no boss spawns. Nobody is ejected; players inside see "The arena is quiet...
+  returns in m:ss". **The cooldown is in memory only: it is not kept across a server restart or `/pvpbots reload`**
+  (the boss is available again right after either).
+
+**Damage rules in boss arenas.**
+- Damage dealt to the boss is its **final damage** (after the boss's own armour and enchantments) subtracted from the
+  plugin health pool; the fake player's own health stays full. It is **x1.5 during recovery windows**, and **ignored
+  during a roar and when it comes from outside the arena**. Fire, lava, fall, drowning, suffocation and other
+  non-entity damage do nothing to it.
+- "Inside the arena" for the boss is **inside the region AND within the round wall** (horizontal radius 20 from the
+  centre): the region's square corners outside the wall do not count. A boss that leaves is brought back to the centre.
+- **Players cannot hurt each other** in a boss arena. Bosses never target bots and bots never fight bosses (ally
+  squads and trainers ignore them).
+- Boss damage numbers are RAW attack damage dealt by the boss, so the target's armour, enchantments and absorption
+  apply as in vanilla. Combo hits deal the configured `damage` per swing; weapon enchantments on the boss's main hand
+  (fire aspect, sharpness) do **not** apply to combo swings. `knockback-resistance` is the base attribute value;
+  the boss's armour adds on top.
+- **The boss has no plain melee.** All its damage comes from telegraphed moves, each with a tell of at least 10 ticks
+  (it stops, raises its weapon, particles gather, a sound plays) before damage lands. It focuses the player who dealt
+  the most damage in the last 10 s, with some randomness.
+- **Stuck guard (anti-cheese).** If no target is reachable on foot (more than 3.5 blocks away horizontally and no
+  progress for 3 s) or a target is more than 4 blocks above it, it uses a leap or ranged move even if that move is on
+  cooldown.
+
+**Winners and rewards.** A winner is a player who dealt at least 1 damage to the boss in this fight and was inside
+the region when it died, or died inside it during the fight. At the kill the `BossDefeatedEvent` fires once (before
+any reward); then each winner gets personal loot (a winner who is dead gets it once alive again), `xp`, and the
+`commands` run from the console once per winner (`%player%`, `%boss%`).
+
+### The `bosses:` config
+
+Each key under `bosses:` is a boss type id. The shipped `config.yml` has two examples, `ashblade` (melee) and
+`thornbow` (mixed melee and ranged); copy and change them. The same keys, every one commented:
+
+```yaml
+bosses:
+  my-boss:                      # the id used in /pvpbots boss create <name> my-boss
+    name: "My Boss"             # boss bar and chat name
+    skin:                       # optional signed texture, same format as the skins: list
+      value: "..."
+      signature: "..."
+    base-health: 350            # health pool for ONE player; a plugin-side pool, may exceed 1024
+    health-per-extra-player: 0.6   # +60% per extra player (default 0.6)
+    gear:                       # material names; any of head chest legs feet main-hand off-hand
+      head: NETHERITE_HELMET
+      chest: NETHERITE_CHESTPLATE
+      legs: NETHERITE_LEGGINGS
+      feet: NETHERITE_BOOTS
+      main-hand: NETHERITE_SWORD
+    enchants:                   # per gear slot: ENCHANTMENT: level
+      main-hand: { SHARPNESS: 5, FIRE_ASPECT: 2 }
+    move-speed: 1.0             # movement multiplier, 1.0 = normal
+    knockback-resistance: 0.8   # 0..1, default 0.8 (base value; armour adds on top)
+    moves:                      # the moveset; the key is the move id
+      combo3:
+        type: combo             # see the move types below
+        weight: 5               # how often it is picked (0 = never by chance)
+        range: [0, 3.5]         # target distance in blocks where it may be used
+        telegraph-ticks: 14     # wind-up with a visible tell; damaging moves: at least 10
+        damage: 8               # RAW damage (per hit / arrow / area)
+        cooldown-ticks: 40      # before it can be used again
+        recovery-ticks: 20      # afterwards the boss is slow and takes 1.5x damage
+        hits: 3                 # combo keys
+        interval-ticks: 8
+      combo5:                   # only available from phase 2 (see add-moves)
+        type: combo
+        weight: 4
+        range: [0, 3.5]
+        telegraph-ticks: 14
+        damage: 8
+        cooldown-ticks: 60
+        recovery-ticks: 24
+        hits: 5
+        interval-ticks: 6
+      roar:
+        type: roar
+        weight: 0               # used by phase changes only
+        invulnerable-ticks: 40
+    phases:                     # ordered by health fraction
+      - at: 0.5                 # starts when health reaches 50%
+        roar: true              # plays the roar move first
+        move-speed: 1.15        # multipliers from here on
+        telegraph-scale: 0.8    # 0.8 = tells 20% shorter (never below 10 ticks for damaging moves)
+        add-moves: [combo5]     # moves NOT available before this phase
+        remove-moves: []        # moves dropped from this phase on
+    loot:
+      guaranteed:               # always dropped
+        - { item: GOLDEN_APPLE, amount: 2 }
+      rolls: 2                  # then this many draws from table: each picks one entry at random ...
+      table:
+        - { item: DIAMOND, amount: 3, chance: 0.5 }   # ... and keeps it with its chance (0..1)
+    xp: 500                     # XP points to each winner
+    commands: ["say %player% defeated %boss%!"]   # console, once per winner
+    cooldown-seconds: 600       # arena stays quiet this long after a kill (default 600)
+```
+
+Items go into the winner's inventory; the overflow drops at their feet.
+
+**Move types and their keys.** Every move also has `type`, `weight`, `range`, `telegraph-ticks`, `damage`,
+`cooldown-ticks` and `recovery-ticks` (above); these are the extra keys:
+
+| Type | Keys | What it does |
+|---|---|---|
+| `combo` | `hits`, `interval-ticks` | Melee swings, each at full reach; `damage` is dealt per swing. |
+| `leap-slam` | `radius` | Jumps to the target and lands with an area hit, knockback outward. |
+| `shockwave` | `radius`, `speed` | Expanding ring along the ground; players jump it to take nothing. |
+| `volley` | `arrows`, `spread`, `bursts` (default 1) | Real arrows in a fan; `bursts` is how many volleys in a row. |
+| `charged-shot` | none | One long-telegraphed, high-damage arrow. |
+| `backstep` | `distance` | Quick dash away, no damage; sets up ranged moves. |
+| `roar` | `invulnerable-ticks` | Phase-change move (give it `weight: 0`): the boss is invulnerable and pushes players back. |
+
+Tuning guide against full diamond armour (20 armour, 8 toughness): raw 8 hits for about 2.2 hp, 14 about 4.8 hp, 16
+about 5.8 hp of a 20 hp bar; the examples let the big moves kill in about 4-5 hits. Invalid values are reported as
+`config: ...` warnings in the log; `/pvpbots reload` re-reads the file.
+
+### For developers: `BossDefeatedEvent`
+
+`pvpbots.bukkit.BossDefeatedEvent(arena: String, bossType: String, winners: List<Player>)` is a normal Bukkit event,
+fired once when a boss dies, **before any reward is given**. It cannot be cancelled. `arena` is the boss arena's
+name, `bossType` the id under `bosses:`, `winners` the online winners (see "Winners and rewards").
+
+```kotlin
+@EventHandler
+fun onBoss(e: BossDefeatedEvent) = e.winners.forEach { it.sendMessage("${e.bossType} fell in ${e.arena}") }
+```
+
 ## config.yml
 
 | Key | Default | Meaning |
 |---|---|---|
-| `max-bots` | 100 | Server-wide cap on live bots. Further requests wait in a queue ("All trainers busy, please wait…"). |
+| `max-bots` | 100 | Server-wide cap on live bots (trainers, allies, team-round fillers and bosses). Further requests wait in a queue ("All trainers busy, please wait…"). |
 | `trainer.countdown-seconds` | 3 | Countdown before a trainer fights. |
 | `trainer.time-limit-seconds` | 300 | A round ends as a draw after this. |
 | `trainer.rematch-delay-seconds` | 5 | Pause before the next round. |
@@ -207,6 +400,7 @@ no numbers. A player's death from any cause during the fight counts as a loss. F
 | `skill.win-bonus` / `skill.loss-penalty` | 4.0 / 2.0 | Extra nudge: + `win-bonus` after a player win, − `loss-penalty` after a bot win (a draw: none). |
 | `arenas.blocks-per-tick` | 4000 | Blocks changed per tick while an arena is built or removed (min 1). |
 | `arenas.materials.<floor\|wall\|light\|pad-a\|pad-b\|cover>` | `SMOOTH_STONE`, `STONE_BRICKS`, `SEA_LANTERN`, `BLUE_CONCRETE`, `RED_CONCRETE`, `STONE_BRICKS` | Bukkit block names used by new arenas. |
+| `bosses.<id>.*` | two examples | Boss types, see "The `bosses:` config". |
 | `skins` | `[]` | Signed skin textures, see below. Empty = default skins. |
 | `difficulties.<easy\|medium\|hard\|pro>.*` | see file | Reaction, aim error, turn speed, attack timing, crits, w-tap, strafing, shield, healing, totem, kit. |
 | `kits.<name>.*` | see file | Armor, sword, axe, food, shield, bow, arrows. |
@@ -228,6 +422,7 @@ Each bot gets a random entry.
 | `/pvpbots reload` | `pvpbots.admin` | Ends every session, re-reads `config.yml`, starts again. |
 | `/pvpbots clear` | `pvpbots.admin` | Removes every bot now. Players still inside a bot region get their bots back within a few seconds. |
 | `/pvpbots arena <create\|remove\|list\|kit> ...` | `pvpbots.admin` | Plugin-built arenas; see "Arenas built by the plugin". |
+| `/pvpbots boss <create\|remove\|list> ...` | `pvpbots.admin` | Boss arenas; see "Boss arenas". |
 | `/pvpbots selftest <trainer\|ally\|load N> confirm` | `pvpbots.debug` | Developer self-test. **Ends every live bot session**; runs in temporary `pvpbots_selftest*` worlds, which are unloaded and deleted afterwards. Without `confirm` it only explains this. |
 
 Both permissions default to op.

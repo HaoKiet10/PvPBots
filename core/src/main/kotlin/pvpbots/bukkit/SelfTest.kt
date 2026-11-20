@@ -53,12 +53,16 @@ class SelfTest(
         data object Ally : Mode
         data class Load(val bots: Int) : Mode
 
+        /** [arenas] boss arenas, each with 2 dummy participants. */
+        data class LoadBoss(val arenas: Int) : Mode
+
         companion object {
-            /** `all`, `trainer`, `ally` or `load:N`; anything else means all. */
+            /** `all`, `trainer`, `ally`, `load:N` or `load-boss:N`; anything else means all. */
             fun parse(s: String): Mode = when {
                 s.equals("trainer", true) -> Trainer
                 s.equals("ally", true) -> Ally
                 s.startsWith("load:", true) -> s.substringAfter(':').toIntOrNull()?.let { Load(it.coerceIn(1, 500)) } ?: All
+                s.startsWith("load-boss:", true) -> s.substringAfter(':').toIntOrNull()?.let { LoadBoss(it.coerceIn(1, 20)) } ?: All
                 else -> All
             }
         }
@@ -79,6 +83,9 @@ class SelfTest(
     private val firstDamageTick = HashMap<UUID, Long>()
     private var zombieHits = 0
     private var loadRecording = false
+    private var bossHitsCancelled = false
+    private var bossHitsSeen = 0
+    private var failuresSeen = 0
     private val msptSamples = ArrayList<Double>()
     private var chunkLoadsBots = 0
     private var chunkLoadsOthers = 0
@@ -143,6 +150,7 @@ class SelfTest(
             Mode.Trainer -> trainerChecks()
             Mode.Ally -> allyChecks()
             is Mode.Load -> loadCheck(mode.bots)
+            is Mode.LoadBoss -> loadBossCheck(mode.arenas)
         }
     }
 
@@ -432,6 +440,101 @@ class SelfTest(
         entries.forEach { removeDummy(it.first) }
     }
 
+    /**
+     * `load-boss:N`: N boss arenas (ashblade), each with 2 dummy participants standing at the entrance, for
+     * [LOAD_BOSS_TICKS] ticks (60 s). Boss hits on the dummies are cancelled so they live; the bosses still fight.
+     * Passes when every boss is live and fighting, no bot failed and the average bot work per tick is within budget.
+     * The arenas are removed (blocks restored) afterwards.
+     */
+    private suspend fun SequenceScope<Int>.loadBossCheck(n: Int) {
+        val type = "ashblade"
+        if (manager.config.bosses[type] == null) {
+            check("L2 load-boss $n", false, "no $type boss type in the config")
+            return
+        }
+        plugin.newDirector(n)
+        val failures0 = manager.failureCount
+        val service = plugin.arenaService
+        val boss = plugin.bossDirector
+        val names = ArrayList<String>()
+        val areas = ArrayList<AreaRef>()
+        val entries = ArrayList<BotHandle>()
+        val layouts = ArrayList<pvpbots.arena.Layout>()
+        for (i in 0 until n) {
+            val x = 3000 + i * 60
+            val origin = BlockPos(x, world.getHighestBlockYAt(x, 0), 0)
+            val name = "selftest_lb$i"
+            val layout = pvpbots.arena.ArenaLayout.generate(pvpbots.arena.Preset.BOSS, origin, pvpbots.arena.Facing.NORTH)
+            val refused = service.createAt(world, origin, pvpbots.arena.Facing.NORTH, name, pvpbots.arena.Preset.BOSS, null, null, type)
+            if (refused.any { it.startsWith("Cannot build") }) {
+                check("L2 load-boss $n", false, "arena $name refused: $refused")
+                cleanupBossArenas(names)
+                return
+            }
+            names += name
+            layouts += layout
+        }
+        val ready = waitUntil(1800) { names.all { service.registry.get(it)?.status == pvpbots.arena.ArenaRecord.Status.READY } }
+        if (ready < 0) {
+            check("L2 load-boss $n", false, "arenas never became READY: ${names.map { service.registry.get(it)?.status }}")
+            cleanupBossArenas(names)
+            return
+        }
+        for (i in 0 until n) {
+            val rec = service.registry.get(names[i])!!
+            areas += AreaRef(world.name, rec.regionId, Role.BOSS, null, 1, layouts[i].region, arena = names[i])
+            val entry = rec.padsA.single()
+            entries += spawnDummy("B${i}a", entry.x - 1, entry.z)
+            entries += spawnDummy("B${i}b", entry.x + 1, entry.z)
+        }
+        yield(5)
+        bossHitsCancelled = true
+        loadRecording = true
+        for (i in 0 until n) for (k in 0..1) boss.onAreaChange(entries[i * 2 + k].bukkit, null, areas[i])
+        // Intro (3 s) and spawn, then the fight.
+        yield(100)
+        val bossesAtStart = boss.bossCount()
+        val fighting = names.count { boss.encounterState(it) == pvpbots.boss.BossEncounter.State.FIGHT }
+        msptSamples.clear()
+        BotProfiler.reset()
+        BotProfiler.enabled = true
+        val botMs = ArrayList<Double>(LOAD_BOSS_TICKS)
+        repeat(LOAD_BOSS_TICKS) {
+            yield(1)
+            // Boss brains and moves run in BossDirector.tick, beside BotManager.tickBots: both count as bot work.
+            botMs += (manager.lastTickNanos + boss.lastTickNanos) / 1e6
+        }
+        BotProfiler.enabled = false
+        loadRecording = false
+        bossHitsCancelled = false
+        val mspt = msptSamples.toList()
+        val bossesAtEnd = boss.bossCount()
+        val fightingEnd = names.count { boss.encounterState(it) == pvpbots.boss.BossEncounter.State.FIGHT }
+        failuresSeen = manager.failureCount - failures0
+        val avg = botMs.average()
+        check(
+            "L2 load-boss $n",
+            bossesAtStart == n && bossesAtEnd == n && fightingEnd == n && failuresSeen == 0 && avg <= LOAD_BUDGET_MS,
+            "$n boss arenas x 2 dummies; bosses live $bossesAtStart/$n at start, $bossesAtEnd at end; fighting $fighting at start, " +
+                "$fightingEnd at end; boss hits on dummies (cancelled) $bossHitsSeen; bot work per tick (bots + boss director) over $LOAD_BOSS_TICKS ticks: " +
+                "${stats(botMs)} (budget avg <= $LOAD_BUDGET_MS ms); server MSPT ${stats(mspt)} (${mspt.size} ticks); failures $failuresSeen",
+        )
+        for (i in 0 until n) for (k in 0..1) boss.onAreaChange(entries[i * 2 + k].bukkit, areas[i], null)
+        yield(2)
+        plugin.newDirector(null)
+        cleanupBossArenas(names)
+        entries.forEach { removeDummy(it) }
+    }
+
+    /** Removes the load-test boss arenas (blocks restored); forgets any that does not finish. */
+    private suspend fun SequenceScope<Int>.cleanupBossArenas(names: List<String>) {
+        val service = plugin.arenaService
+        for (name in names) service.remove(name)
+        if (waitUntil(1800) { names.all { service.registry.get(it) == null } } < 0) {
+            names.filter { service.registry.get(it) != null }.forEach { service.forget(it) }
+        }
+    }
+
     /** Replaces load-test zombies [RESPAWN_TICKS] after they die. Returns how many were found dead this tick. */
     private fun tendMobs(spots: List<MobSpot>): Int {
         var died = 0
@@ -555,6 +658,18 @@ class SelfTest(
         return manager.isBot(source.uniqueId)
     }
 
+    /** `load-boss:N`: boss hits on dummies are cancelled (the dummies must live for the whole minute). */
+    @EventHandler(priority = EventPriority.LOWEST)
+    fun onBossHit(event: EntityDamageByEntityEvent) {
+        if (!bossHitsCancelled || !isFake(event.entity.uniqueId)) return
+        val src = (event.damager as? Projectile)?.shooter as? Entity ?: event.damager
+        if (manager.record(src.uniqueId)?.role == Role.BOSS) {
+            bossHitsSeen++
+            event.isCancelled = true
+            event.entity.fireTicks = 0
+        }
+    }
+
     @EventHandler(priority = EventPriority.MONITOR)
     fun onTickEnd(event: ServerTickEndEvent) {
         if (loadRecording) msptSamples += event.tickDuration
@@ -632,6 +747,7 @@ class SelfTest(
         const val RESULT_FILE = "selftest-result.txt"
         const val BOTS_FILE = "selftest-bots.txt"
         private const val LOAD_TICKS = 1200
+        private const val LOAD_BOSS_TICKS = 1200
         private const val SPIKE_TICKS = 100
         /** A squad of 3 is spawned 2 per tick (bot.spawns-per-tick default); allow a few ticks of slack. */
         private const val SQUAD_SPAWN_TICKS = 10

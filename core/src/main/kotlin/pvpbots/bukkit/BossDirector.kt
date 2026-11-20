@@ -95,7 +95,20 @@ class BossDirector(private val plugin: PvpBotsPlugin) {
         inRegion.values.removeIf { it == name }
     }
 
+    /** Wall time of the last [tick] (boss brains and moves run here, not in `BotManager.tickBots`); the load self-test adds it. */
+    var lastTickNanos = 0L
+        private set
+
     fun tick() {
+        val start = System.nanoTime()
+        try {
+            tickAll()
+        } finally {
+            lastTickNanos = System.nanoTime() - start
+        }
+    }
+
+    private fun tickAll() {
         val now = manager.nowMs()
         deliverPending()
         val names = LinkedHashSet<String>(arenas.keys)

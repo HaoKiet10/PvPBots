@@ -438,7 +438,12 @@ class BotManager(
      * Logs [e] with its stack trace the first time its signature (class + top plugin frame) is seen; repeats are
      * counted and summarised in one WARNING line at most once per minute.
      */
+    /** Every failure seen by [logFailure], logged or not (the load self-test reads it). */
+    @Volatile var failureCount = 0
+        private set
+
     private fun logFailure(e: Throwable, context: String, level: Level = Level.WARNING) {
+        failureCount++
         when (val a = failureLog.record(e, System.currentTimeMillis())) {
             FailureLog.Action.Full -> logger.log(level, context, e)
             is FailureLog.Action.Summary -> logger.warning(
