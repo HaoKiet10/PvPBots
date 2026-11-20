@@ -3,6 +3,8 @@ package pvpbots.bukkit
 import org.bukkit.Material
 import org.bukkit.configuration.ConfigurationSection
 import org.bukkit.configuration.file.YamlConfiguration
+import pvpbots.boss.BossConfigLoader
+import pvpbots.boss.BossType
 import pvpbots.config.ArenaSettings
 import pvpbots.config.PluginSettings
 import pvpbots.profile.Difficulty
@@ -17,6 +19,8 @@ class BotConfig(
     val profiles: Map<Difficulty, DifficultyProfile>,
     val kits: KitApplier,
     val skins: SkinPool,
+    /** Boss types by id (`bosses:`); `boss create` validates its type against these. */
+    val bosses: Map<String, BossType> = emptyMap(),
 ) {
     companion object {
         /**
@@ -75,15 +79,27 @@ class BotConfig(
             }
 
             val skins = SkinPool.load(root["skins"], warnings)
+            @Suppress("UNCHECKED_CAST")
+            val bossesRaw: Map<String, Any?> = when (val b = root["bosses"]) {
+                is Map<*, *> -> b as Map<String, Any?>
+                else -> {
+                    warnings += if (b == null) "bosses: section missing, using bundled bosses" else "bosses: expected a section, using bundled bosses"
+                    bundledSection(bundled, "bosses")
+                }
+            }
+            val bosses = BossConfigLoader.load(bossesRaw).also { warnings += it.warnings }.value
             val plugin = settings.value.copy(arenas = arenas.copy(materials = materials))
-            return BotConfig(plugin, profiles, kits, skins) to warnings
+            return BotConfig(plugin, profiles, kits, skins, bosses) to warnings
         }
 
         @Suppress("UNCHECKED_CAST")
-        private fun bundledKits(bundled: () -> Reader?): Map<String, Any?> {
+        private fun bundledKits(bundled: () -> Reader?): Map<String, Any?> = bundledSection(bundled, "kits")
+
+        @Suppress("UNCHECKED_CAST")
+        private fun bundledSection(bundled: () -> Reader?, key: String): Map<String, Any?> {
             val reader = bundled() ?: return emptyMap()
             val yaml = reader.use { YamlConfiguration.loadConfiguration(it) }
-            return yaml.toPlainMap()["kits"] as? Map<String, Any?> ?: emptyMap()
+            return yaml.toPlainMap()[key] as? Map<String, Any?> ?: emptyMap()
         }
 
         /** Bukkit sections -> nested plain maps (lists keep their elements; list maps are already plain). */

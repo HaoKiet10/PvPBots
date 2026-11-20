@@ -35,7 +35,7 @@ import java.time.Instant
 import java.util.UUID
 
 /**
- * Scripted in-server checks (T1-T6 trainer, A1-A2 ally, A3-A7 + T7 arenas in [ArenaSelfTest], K1-K5 (+K2b) kit arenas in [KitSelfTest]; D1 is checked by the Gradle `selfTest` task after the
+ * Scripted in-server checks (T1-T6 trainer, A1-A2 ally, A3-A7 + T7 arenas in [ArenaSelfTest], K1-K5 (+K2b) kit arenas in [KitSelfTest], B1 boss arenas in [BossSelfTest]; D1 is checked by the Gradle `selfTest` task after the
  * server exits). Runs in the flat world [WORLD] with dummy owners: fake players spawned through the adapter but NOT
  * registered as bots (so the director and the damage policy treat them as real players). Areas are hand-built
  * [AreaRef]s passed to `director.onAreaChange` directly. The script is a sequence that yields "wait N ticks".
@@ -138,6 +138,7 @@ class SelfTest(
                 with(KitSelfTest(this@SelfTest, plugin, world)) { run() }
                 with(SkillSelfTest(this@SelfTest, plugin, world)) { run() }
                 with(TeamSelfTest(this@SelfTest, plugin, world)) { run() }
+                with(BossSelfTest(this@SelfTest, plugin, world)) { run() }
             }
             Mode.Trainer -> trainerChecks()
             Mode.Ally -> allyChecks()

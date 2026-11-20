@@ -43,7 +43,56 @@ object ArenaLayout {
         return BlockPos(origin.x + x, origin.y + dy, origin.z + z)
     }
 
-    fun generate(preset: Preset, origin: BlockPos, facing: Facing): Layout {
+    /** Boss arena: walls reach y+6, the interior is cleared to y+10. */
+    const val BOSS_WALL_HEIGHT = 6
+    const val BOSS_CLEAR_HEIGHT = 10
+
+    fun generate(preset: Preset, origin: BlockPos, facing: Facing): Layout =
+        if (preset.round) generateRound(preset, origin, facing) else generateSquare(preset, origin, facing)
+
+    /**
+     * A disc of radius `inside / 2` (floor, interior air) inside a one-block wall ring (cells at distance in (r, r+1]).
+     * Every 4-neighbour of a disc cell is a disc or ring cell, so the ring is closed. The entrance is the three ring
+     * cells behind the admin (local z < 0, |x| <= 1). [Layout.padsA] is one entry spot just inside it, [Layout.padsB]
+     * the centre (the boss spawn).
+     */
+    private fun generateRound(preset: Preset, origin: BlockPos, facing: Facing): Layout {
+        val r = preset.inside / 2
+        val ring = r + 1
+        val local = LinkedHashMap<Triple<Int, Int, Int>, Part>()
+        fun d2(x: Int, z: Int) = x * x + z * z
+        for (lx in -ring..ring) for (lz in -ring..ring) {
+            val d = d2(lx, lz)
+            if (d > ring * ring) continue
+            local[Triple(lx, 0, lz)] = Part.FLOOR
+            if (d <= r * r) {
+                for (dy in 1..BOSS_CLEAR_HEIGHT) local[Triple(lx, dy, lz)] = Part.AIR
+            } else {
+                val entrance = lz < 0 && abs(lx) <= 1
+                for (dy in 1..BOSS_WALL_HEIGHT) local[Triple(lx, dy, lz)] = if (entrance) Part.AIR else Part.WALL
+            }
+        }
+        val entryZ = -(r - 2)
+        local[Triple(0, 0, entryZ)] = Part.PAD_A
+        local[Triple(0, 0, 0)] = Part.PAD_B
+        val lightAxis = (-(r / LIGHT_SPACING)..r / LIGHT_SPACING).map { it * LIGHT_SPACING }
+        for (lx in lightAxis) for (lz in lightAxis) {
+            val k = Triple(lx, 0, lz)
+            if (d2(lx, lz) <= r * r && local[k] == Part.FLOOR) local[k] = Part.LIGHT
+        }
+        val blocks = LinkedHashMap<BlockPos, Part>()
+        for ((k, part) in local) blocks[rotate(k.first, k.second, k.third, origin, facing)] = part
+        val top = origin.y + BOSS_CLEAR_HEIGHT
+        return Layout(
+            blocks = blocks,
+            outer = Bounds(BlockPos(origin.x - ring, origin.y, origin.z - ring), BlockPos(origin.x + ring, top, origin.z + ring)),
+            region = Bounds(BlockPos(origin.x - r, origin.y + 1, origin.z - r), BlockPos(origin.x + r, top, origin.z + r)),
+            padsA = listOf(rotate(0, 0, entryZ, origin, facing)),
+            padsB = listOf(origin),
+        )
+    }
+
+    private fun generateSquare(preset: Preset, origin: BlockPos, facing: Facing): Layout {
         val h = preset.inside / 2
         val ring = h + 1
         // Local frame: x across, z away from the admin. A pads at negative z (near side), B at positive z.
@@ -63,6 +112,7 @@ object ArenaLayout {
             Preset.DUEL -> emptyList()
             Preset.SQUAD -> SQUAD_COVER
             Preset.TEAM -> TEAM_COVER
+            Preset.BOSS -> emptyList()
         }
         for ((cx, cz) in cover) for (dy in 1..COVER_HEIGHT) local[Triple(cx, dy, cz)] = Part.COVER
 

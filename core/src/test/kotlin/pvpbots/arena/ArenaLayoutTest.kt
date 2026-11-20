@@ -52,7 +52,7 @@ class ArenaLayoutTest {
     }
 
     @Test fun interior_clearedToAir() {
-        for (p in Preset.entries) {
+        for (p in Preset.TEAM_PRESETS) {
             val l = gen(p)
             val h = p.inside / 2
             for (x in -h..h) for (z in -h..h) for (y in 65..72) {
@@ -79,7 +79,7 @@ class ArenaLayoutTest {
     }
 
     @Test fun lights_inFloorGrid() {
-        for (p in Preset.entries) {
+        for (p in Preset.TEAM_PRESETS) {
             val l = gen(p)
             val h = p.inside / 2
             val lights = l.blocks.filter { it.value == Part.LIGHT }.keys
@@ -115,7 +115,7 @@ class ArenaLayoutTest {
     }
 
     @Test fun outsideEntrance_isOutsideTheFootprintInFrontOfTheGap() {
-        for (p in Preset.entries) for (f in Facing.entries) {
+        for (p in Preset.TEAM_PRESETS) for (f in Facing.entries) {
             val l = gen(p, f)
             val o = ArenaLayout.outsideEntrance(p, origin, f)
             assertTrue(o.x !in l.outer.min.x..l.outer.max.x || o.z !in l.outer.min.z..l.outer.max.z, "$p $f: $o inside ${l.outer}")
@@ -127,5 +127,91 @@ class ArenaLayoutTest {
             assertEquals(2, abs(o.x - mid.x) + abs(o.z - mid.z), "$p $f: $o vs gap centre $mid")
         }
         assertEquals(BlockPos(0, 64, 11), ArenaLayout.outsideEntrance(Preset.DUEL, origin, Facing.NORTH))
+    }
+
+    // ---- boss arena ----
+
+    private fun bossLocal(l: Layout) = l.blocks.mapKeys { (k, _) -> Triple(k.x - origin.x, k.y - origin.y, k.z - origin.z) }
+
+    @Test fun boss_isRoundRadius20() {
+        val l = gen(Preset.BOSS) // facing NORTH: the admin's side is +z
+        val local = bossLocal(l)
+        val floor = local.filter { it.key.second == 0 }
+        // Floor is the disc of radius 21 (wall ring included) and nothing beyond; the radius-20 disc is fully floored.
+        assertTrue(floor.keys.all { (x, _, z) -> x * x + z * z <= 21 * 21 })
+        for (x in -21..21) for (z in -21..21) {
+            val d = x * x + z * z
+            if (d <= 21 * 21) assertTrue(Triple(x, 0, z) in floor, "floor missing at $x,$z")
+        }
+        assertTrue(local.keys.all { (x, _, z) -> x * x + z * z <= 21 * 21 })
+        for ((k, part) in local) {
+            val (x, y, z) = k
+            val d = x * x + z * z
+            if (y == 0) continue
+            if (d <= 400) {
+                assertEquals(Part.AIR, part, "interior $k")
+                assertTrue(y in 1..10)
+            } else {
+                assertTrue(y in 1..6, "wall height $k")
+                val entrance = z > 0 && abs(x) <= 1 // NORTH: the admin side is +z
+                assertEquals(if (entrance) Part.AIR else Part.WALL, part, "ring $k")
+            }
+        }
+        for (x in -20..20) for (z in -20..20) if (x * x + z * z <= 400) for (y in 1..10) assertEquals(Part.AIR, local[Triple(x, y, z)])
+        // Walls reach y+6 exactly; the interior is cleared to y+10.
+        assertEquals(6, local.filter { it.value == Part.WALL }.keys.maxOf { it.second })
+        assertEquals(10, local.keys.maxOf { it.second })
+        assertEquals(10, l.outer.max.y - origin.y)
+        assertTrue(l.blocks.keys.all { l.outer.contains(it) })
+    }
+
+    @Test fun boss_ringIsClosedExceptTheEntrance() {
+        val local = bossLocal(gen(Preset.BOSS))
+        // Every 4-neighbour of an interior cell is interior or ring: the wall cannot leak.
+        for (x in -20..20) for (z in -20..20) if (x * x + z * z <= 400) {
+            for ((dx, dz) in listOf(1 to 0, -1 to 0, 0 to 1, 0 to -1)) {
+                assertTrue(Triple(x + dx, 1, z + dz) in local, "leak next to $x,$z")
+            }
+        }
+        val gap = local.filter { it.key.second == 1 && it.value == Part.AIR && it.key.first.let { _ -> true } }
+            .keys.filter { (x, _, z) -> x * x + z * z > 400 }
+        assertEquals(3, gap.size)
+        assertTrue(gap.all { (x, _, z) -> abs(x) <= 1 && z > 0 })
+        for (y in 1..6) assertEquals(3, local.count { (k, v) -> k.second == y && v == Part.AIR && k.first * k.first + k.third * k.third > 400 })
+    }
+
+    @Test fun boss_noCover_padsAndLights() {
+        val l = gen(Preset.BOSS)
+        assertTrue(l.blocks.values.none { it == Part.COVER })
+        assertEquals(listOf(BlockPos(0, 64, 18)), l.padsA) // one entry spot at the entrance, admin side (+z facing NORTH)
+        assertEquals(listOf(origin), l.padsB) // the centre
+        assertEquals(Part.PAD_A, l.blocks[l.padsA.single()])
+        assertEquals(Part.PAD_B, l.blocks[origin])
+        val lights = l.blocks.filter { it.value == Part.LIGHT }.keys
+        assertTrue(lights.isNotEmpty() && lights.all { it.y == 64 && it.x * it.x + it.z * it.z <= 400 })
+    }
+
+    @Test fun boss_entranceFollowsFacing() {
+        for (f in Facing.entries) {
+            val l = gen(Preset.BOSS, f)
+            val o = ArenaLayout.outsideEntrance(Preset.BOSS, origin, f)
+            val pad = l.padsA.single()
+            // The outside spot, the entry pad and the centre are on one line; the spot is outside the footprint.
+            assertTrue(o.x !in l.outer.min.x..l.outer.max.x || o.z !in l.outer.min.z..l.outer.max.z, "$f: $o")
+            assertTrue((pad.x == 0 && o.x == 0) || (pad.z == 0 && o.z == 0), "$f: $pad $o")
+            assertEquals(Part.AIR, l.blocks[BlockPos(pad.x, 65, pad.z)])
+        }
+    }
+
+    @Test fun boss_record_roundTrips() {
+        val l = gen(Preset.BOSS)
+        val r = ArenaRecord(
+            name = "b", world = "w", origin = origin, facing = Facing.NORTH, preset = Preset.BOSS, regionId = "pvpbots_b",
+            status = ArenaRecord.Status.READY, kit = null, padsA = l.padsA, padsB = l.padsB, bossType = "ashblade",
+        )
+        assertEquals("ashblade", r.copy(status = ArenaRecord.Status.REMOVING).bossType)
+        assertEquals(r, r.copy())
+        assertEquals(null, r.copy(bossType = null).bossType)
+        assertTrue(Preset.BOSS !in Preset.TEAM_PRESETS)
     }
 }

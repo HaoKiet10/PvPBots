@@ -133,7 +133,7 @@ internal class TeamSelfTest(private val t: SelfTest, private val plugin: PvpBots
         // Short fights so the first (two-player) round ends by itself and the third dummy is seated in the second one.
         manager.config = BotConfig(
             original.settings.copy(timings = original.settings.timings.copy(timeLimitS = 20, rematchDelayS = 2)),
-            original.profiles, original.kits, original.skins,
+            original.profiles, original.kits, original.skins, original.bosses,
         )
         plugin.newDirector(null)
         friendlyLive = 0

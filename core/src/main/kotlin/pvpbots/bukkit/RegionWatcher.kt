@@ -7,6 +7,7 @@ import com.sk89q.worldguard.WorldGuard
 import com.sk89q.worldguard.protection.ApplicableRegionSet
 import com.sk89q.worldguard.protection.flags.EnumFlag
 import com.sk89q.worldguard.protection.flags.IntegerFlag
+import com.sk89q.worldguard.protection.flags.StringFlag
 import com.sk89q.worldguard.protection.flags.registry.FlagConflictException
 import com.sk89q.worldguard.protection.regions.GlobalProtectedRegion
 import com.sk89q.worldguard.protection.regions.ProtectedRegion
@@ -47,16 +48,17 @@ class RegionWatcher(private val plugin: JavaPlugin, private val events: Events) 
     private var factory: Factory? = null
     private var task: BukkitTask? = null
 
-    /** Registers the three flags; must run in onLoad. False (after logging) on a flag conflict. */
+    /** Registers the four flags; must run in onLoad. False (after logging) on a flag conflict. */
     fun registerFlags(): Boolean {
         val registry = WorldGuard.getInstance().flagRegistry
         return try {
             registry.register(ROLE)
             registry.register(DIFFICULTY)
             registry.register(COUNT)
+            registry.register(BOSS_TYPE)
             true
         } catch (e: FlagConflictException) {
-            plugin.logger.severe("WorldGuard flag conflict (${e.message}): another plugin already registered pvpbot-role, pvpbot-difficulty or pvpbot-count. PvpBots will be disabled.")
+            plugin.logger.severe("WorldGuard flag conflict (${e.message}): another plugin already registered pvpbot-role, pvpbot-difficulty, pvpbot-count or pvpbot-boss. PvpBots will be disabled.")
             false
         } catch (e: IllegalStateException) {
             plugin.logger.severe("WorldGuard flags could not be registered (${e.message}); PvpBots must be loaded before WorldGuard enables. PvpBots will be disabled.")
@@ -162,5 +164,8 @@ class RegionWatcher(private val plugin: JavaPlugin, private val events: Events) 
         val ROLE = EnumFlag("pvpbot-role", Role::class.java)
         val DIFFICULTY = EnumFlag("pvpbot-difficulty", Difficulty::class.java)
         val COUNT = IntegerFlag("pvpbot-count")
+
+        /** Boss type id of a boss arena region (informational: the arena record is the source of truth). */
+        val BOSS_TYPE = StringFlag("pvpbot-boss")
     }
 }

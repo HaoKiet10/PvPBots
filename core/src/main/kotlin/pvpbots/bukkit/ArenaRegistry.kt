@@ -88,7 +88,8 @@ class ArenaRegistry(private val file: File) {
                     kit = s.getString("kit"),
                     padsA = s.getStringList("pads-a").map { pos(it) },
                     padsB = s.getStringList("pads-b").map { pos(it) },
-                )
+                    bossType = s.getString("boss"),
+                ).also { require(it.preset != Preset.BOSS || it.bossType != null) { "boss type missing" } }
             } catch (e: IllegalArgumentException) {
                 warnings += "${file.name}: arena '$name' skipped (${e.message}); its entry is kept in the file as it is"
                 skipped[name] = plain(yaml.get(name))
@@ -129,6 +130,7 @@ class ArenaRegistry(private val file: File) {
             s.set("kit", r.kit)
             s.set("pads-a", r.padsA.map { str(it) })
             s.set("pads-b", r.padsB.map { str(it) })
+            s.set("boss", r.bossType)
         }
         writeDurably(file, yaml.saveToString().toByteArray(Charsets.UTF_8))
     }

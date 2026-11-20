@@ -28,7 +28,7 @@ class ArenaCommand(private val plugin: PvpBotsPlugin) {
         }
         val confirm = rest.lastOrNull().equals("confirm", ignoreCase = true)
         val args = if (confirm) rest.dropLast(1) else rest
-        val preset = args.getOrNull(1)?.let { p -> Preset.entries.firstOrNull { it.name.equals(p, ignoreCase = true) } }
+        val preset = args.getOrNull(1)?.let { p -> Preset.TEAM_PRESETS.firstOrNull { it.name.equals(p, ignoreCase = true) } }
         if (args.size !in 2..3 || preset == null) {
             sender.sendMessage("Usage: /pvpbots arena create <name> <duel|squad|team> [kit] [confirm]")
             return
@@ -85,7 +85,7 @@ class ArenaCommand(private val plugin: PvpBotsPlugin) {
             1 -> listOf("create", "remove", "list", "kit")
             2 -> if (sub == "remove" || sub == "kit") names() else emptyList()
             3 -> when (sub) {
-                "create" -> Preset.entries.map { it.name.lowercase() }
+                "create" -> Preset.TEAM_PRESETS.map { it.name.lowercase() }
                 "remove" -> listOf("confirm")
                 "kit" -> kits() + "none"
                 else -> emptyList()

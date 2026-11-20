@@ -46,6 +46,15 @@ class ArenaService(private val plugin: PvpBotsPlugin, val registry: ArenaRegistr
     /** Called with the arena name before an arena's blocks or kit change: restores kit-arena inventories (§5.6). */
     var onArenaRelease: (String) -> Unit = {}
 
+    /**
+     * Boss arenas only, called (after [onArenaRelease]) with the arena name before the arena is removed: the encounter
+     * code removes a live boss and ends the fight here, while its blocks are still in place.
+     */
+    var onBossArenaRelease: (String) -> Unit = {}
+
+    /** Boss arenas only: the encounter state `arena list` shows for the arena (the encounter code replaces this). */
+    var bossState: (String) -> String = { "idle" }
+
     private class Running(val record: ArenaRecord, val job: ArenaJob, val writer: BukkitBlockWriter, val chunks: List<Chunk>, val admin: UUID?)
 
     private val jobs = LinkedHashMap<String, Running>()
@@ -75,29 +84,40 @@ class ArenaService(private val plugin: PvpBotsPlugin, val registry: ArenaRegistr
 
     // ---- create ----
 
-    fun preview(p: Player, name: String, preset: Preset, kit: String?): List<String> =
-        previewAt(p.world, originOf(p), Facing.fromYaw(p.location.yaw), name, preset, kit)
+    fun preview(p: Player, name: String, preset: Preset, kit: String?, bossType: String? = null): List<String> =
+        previewAt(p.world, originOf(p), Facing.fromYaw(p.location.yaw), name, preset, kit, bossType)
 
-    fun create(p: Player, name: String, preset: Preset, kit: String?): List<String> =
-        createAt(p.world, originOf(p), Facing.fromYaw(p.location.yaw), name, preset, kit, p.uniqueId)
+    fun create(p: Player, name: String, preset: Preset, kit: String?, bossType: String? = null): List<String> =
+        createAt(p.world, originOf(p), Facing.fromYaw(p.location.yaw), name, preset, kit, p.uniqueId, bossType)
+
+    /** The config's own `bosses:` key matching [type] ignoring case, else [type] unchanged. */
+    fun bossKey(type: String?): String? =
+        type?.let { t -> plugin.botManager.config.bosses.keys.firstOrNull { it.equals(t, ignoreCase = true) } ?: t }
 
     /** What [createAt] would build here, its warnings, and why it would be refused (if it would). */
-    internal fun previewAt(world: World, origin: BlockPos, facing: Facing, name: String, preset: Preset, kitName: String?): List<String> {
+    internal fun previewAt(
+        world: World, origin: BlockPos, facing: Facing, name: String, preset: Preset, kitName: String?, bossTypeName: String? = null,
+    ): List<String> {
         val kit = kitKey(kitName)
+        val boss = bossKey(bossTypeName)
         val layout = ArenaLayout.generate(preset, origin, facing)
-        val (refusals, warnings) = evaluate(world, name, kit, layout)
+        val (refusals, warnings) = evaluate(world, name, kit, layout, preset, boss)
         val lines = ArrayList<String>()
-        lines += describe(name, world, origin, facing, preset, kit, layout)
+        lines += describe(name, world, origin, facing, preset, kit, layout, boss)
         warnings.forEach { lines += "Warning: $it" }
         refusals.forEach { lines += "Cannot build: $it" }
         return lines
     }
 
     /** Checks, then snapshot, record and job. Refused (nothing changed) when any check fails or the snapshot cannot be written. */
-    internal fun createAt(world: World, origin: BlockPos, facing: Facing, name: String, preset: Preset, kitName: String?, admin: UUID?): List<String> {
+    internal fun createAt(
+        world: World, origin: BlockPos, facing: Facing, name: String, preset: Preset, kitName: String?, admin: UUID?,
+        bossTypeName: String? = null,
+    ): List<String> {
         val kit = kitKey(kitName)
+        val boss = bossKey(bossTypeName)
         val layout = ArenaLayout.generate(preset, origin, facing)
-        val (refusals, warnings) = evaluate(world, name, kit, layout)
+        val (refusals, warnings) = evaluate(world, name, kit, layout, preset, boss)
         if (refusals.isNotEmpty()) return refusals.map { "Cannot build: $it" }
 
         // A snapshot without a record may be the only copy of some terrain (registry lost or entry skipped): keep it aside.
@@ -127,6 +147,7 @@ class ArenaService(private val plugin: PvpBotsPlugin, val registry: ArenaRegistr
         val record = ArenaRecord(
             name = name, world = world.name, origin = origin, facing = facing, preset = preset,
             regionId = regionIdFor(name), status = Status.BUILDING, kit = kit, padsA = layout.padsA, padsB = layout.padsB,
+            bossType = boss.takeIf { preset == Preset.BOSS },
         )
         try {
             registry.put(record)
@@ -142,9 +163,18 @@ class ArenaService(private val plugin: PvpBotsPlugin, val registry: ArenaRegistr
     }
 
     /** Refusals (non-empty = do not build) and warnings for building [layout] as [name]. */
-    private fun evaluate(world: World, name: String, kit: String?, layout: Layout): Pair<List<String>, List<String>> {
+    private fun evaluate(world: World, name: String, kit: String?, layout: Layout, preset: Preset, boss: String?): Pair<List<String>, List<String>> {
         val refusals = ArrayList<String>()
         val warnings = ArrayList<String>()
+        if (preset == Preset.BOSS) {
+            val types = plugin.botManager.config.bosses.keys
+            if (boss == null || boss !in types) {
+                refusals += "no boss type '${boss ?: ""}' (boss types: ${types.joinToString(", ").ifEmpty { "none configured" }})."
+            }
+            if (kit != null) refusals += "a boss arena has no kit."
+        } else if (boss != null) {
+            refusals += "only a boss arena has a boss type."
+        }
         if (!NAME.matches(name)) refusals += "the name must be 1-32 characters a-z, 0-9, '_' or '-'."
         if (registry.get(name) != null) refusals += "an arena named '$name' already exists."
         if (name in registry.skippedNames()) refusals += "arenas.yml has an unreadable entry named '$name'; fix or remove it by hand first."
@@ -168,8 +198,13 @@ class ArenaService(private val plugin: PvpBotsPlugin, val registry: ArenaRegistr
         return refusals to warnings
     }
 
-    private fun describe(name: String, world: World, origin: BlockPos, facing: Facing, preset: Preset, kit: String?, layout: Layout): String {
+    private fun describe(name: String, world: World, origin: BlockPos, facing: Facing, preset: Preset, kit: String?, layout: Layout, boss: String?): String {
         val o = layout.outer
+        if (preset.round) {
+            return "Boss arena '$name': round, radius ${preset.inside / 2} (${o.max.x - o.min.x + 1}x${o.max.z - o.min.z + 1} with walls), boss ${boss ?: "?"}, " +
+                "floor at ${pos(origin)} in ${world.name}, entrance behind you, facing ${facing.name.lowercase()}; " +
+                "${layout.blocks.size} blocks change (about ${eta(layout.blocks.size)})."
+        }
         return "Arena '$name': ${preset.name.lowercase()} (${preset.inside}x${preset.inside} inside, ${o.max.x - o.min.x + 1}x${o.max.z - o.min.z + 1} " +
             "with walls, ${preset.padsPerSide} pad(s) per side), floor at ${pos(origin)} in ${world.name}, entrance behind you, facing ${facing.name.lowercase()}; " +
             "${layout.blocks.size} blocks change (about ${eta(layout.blocks.size)}); ${kit?.let { "kit $it" } ?: "own gear"}."
@@ -190,6 +225,9 @@ class ArenaService(private val plugin: PvpBotsPlugin, val registry: ArenaRegistr
             return listOf("The snapshot of arena '$name' (${snapshotFile(name).name}) cannot be read (${e.message}); nothing was changed.")
         }
         TickIsolation.guard({ onArenaRelease(name) }) { e -> plugin.logger.log(Level.SEVERE, "Arena $name: release hook failed", e) }
+        if (r.preset == Preset.BOSS) {
+            TickIsolation.guard({ onBossArenaRelease(name) }) { e -> plugin.logger.log(Level.SEVERE, "Arena $name: boss release hook failed", e) }
+        }
         try {
             registry.put(r.copy(status = Status.REMOVING))
         } catch (e: Exception) {
@@ -216,6 +254,7 @@ class ArenaService(private val plugin: PvpBotsPlugin, val registry: ArenaRegistr
         val kit = kitKey(kitName)
         val r = registry.get(name) ?: return listOf("No arena named '$name'.")
         if (r.status == Status.REMOVING) return listOf("Arena '$name' is being removed.")
+        if (r.preset == Preset.BOSS) return listOf("Arena '$name' is a boss arena; it has no kit.")
         if (kit != null && kit !in plugin.botManager.config.kits.kits) {
             return listOf("No kit named '$kit'. Kits: ${plugin.botManager.config.kits.kits.keys.joinToString(", ")}, or none.")
         }
@@ -229,21 +268,34 @@ class ArenaService(private val plugin: PvpBotsPlugin, val registry: ArenaRegistr
         return listOf("Arena '$name' now uses ${kit?.let { "kit $it" } ?: "the players' own gear"}.")
     }
 
-    fun list(): List<String> {
-        val all = registry.all()
-        if (all.isEmpty()) return listOf("No arenas. Build one with /pvpbots arena create <name> <duel|squad|team> [kit].")
+    /** [bossOnly]: only boss arenas (`boss list`); otherwise every arena (`arena list`). */
+    fun list(bossOnly: Boolean = false): List<String> {
+        val all = registry.all().filter { !bossOnly || it.preset == Preset.BOSS }
+        if (all.isEmpty()) {
+            return listOf(
+                if (bossOnly) "No boss arenas. Build one with /pvpbots boss create <name> <boss-type>."
+                else "No arenas. Build one with /pvpbots arena create <name> <duel|squad|team> [kit].",
+            )
+        }
         return all.map { r ->
             val inside = Bukkit.getOnlinePlayers().count { plugin.regionWatcher.areaOf(it.uniqueId)?.arena == r.name }
             val world = Bukkit.getWorld(r.world)
             val regionMissing = r.status == Status.READY && world != null && regionManager(world)?.hasRegion(r.regionId) != true
             val job = jobs[r.name]?.let { " ${it.job.done * 100 / maxOf(1, it.job.targets.size)}%" } ?: ""
-            "${r.name}: ${r.world} ${pos(r.origin)}, ${r.preset.name.lowercase()}, ${r.kit?.let { "kit $it" } ?: "own gear"}, " +
-                "${r.status.name.lowercase()}$job, $inside player(s) inside" +
+            "${r.name}: ${r.world} ${pos(r.origin)}, ${r.preset.name.lowercase()}, ${bossOrKit(r)}, " +
+                "${r.status.name.lowercase()}$job${bossStateOf(r)}, $inside player(s) inside" +
                 (if (regionMissing) " (region missing)" else "") +
                 (if (world == null) " (world not loaded)" else "") +
                 (if (r.name in failed) " (job failed, see the server log)" else "")
         }
     }
+
+    private fun bossOrKit(r: ArenaRecord) =
+        if (r.preset == Preset.BOSS) "type ${r.bossType}" else r.kit?.let { "kit $it" } ?: "own gear"
+
+    /** For a READY boss arena: ", encounter <state>" (the encounter code supplies the state through [bossState]). */
+    private fun bossStateOf(r: ArenaRecord) =
+        if (r.preset == Preset.BOSS && r.status == Status.READY) ", encounter ${bossState(r.name)}" else ""
 
     // ---- jobs ----
 
@@ -338,7 +390,7 @@ class ArenaService(private val plugin: PvpBotsPlugin, val registry: ArenaRegistr
             if (r.status == Status.BUILDING) {
                 if (world != null) {
                     createRegion(world, r)
-                    moveOntoFloor(world, layoutOf(r))
+                    moveOntoFloor(world, layoutOf(r), r.preset.round)
                 }
                 registry.put(r.copy(status = Status.READY))
                 plugin.logger.info("Arena ${r.name}: built and open")
@@ -371,7 +423,8 @@ class ArenaService(private val plugin: PvpBotsPlugin, val registry: ArenaRegistr
         val b = layoutOf(r).region
         val region = ProtectedCuboidRegion(r.regionId, vec(b.min), vec(b.max))
         region.priority = REGION_PRIORITY
-        region.setFlag(RegionWatcher.ROLE, Role.TRAINER)
+        region.setFlag(RegionWatcher.ROLE, if (r.preset == Preset.BOSS) Role.BOSS else Role.TRAINER)
+        if (r.preset == Preset.BOSS) r.bossType?.let { region.setFlag(RegionWatcher.BOSS_TYPE, it) }
         region.setFlag(Flags.BUILD, StateFlag.State.DENY)
         region.setFlag(Flags.PVP, StateFlag.State.ALLOW)
         wg.addRegion(region)
@@ -411,15 +464,16 @@ class ArenaService(private val plugin: PvpBotsPlugin, val registry: ArenaRegistr
     }
 
     /** Real players standing in the footprint (inside a wall, say) are put on the floor inside the walls. */
-    private fun moveOntoFloor(world: World, layout: Layout) {
+    private fun moveOntoFloor(world: World, layout: Layout, round: Boolean) {
         val o = layout.outer
         val inner = layout.region
         for (p in world.players) {
             if (plugin.botManager.isBot(p.uniqueId)) continue
             val l = p.location
             if (l.blockX !in o.min.x..o.max.x || l.blockZ !in o.min.z..o.max.z || l.blockY !in o.min.y..o.max.y + 1) continue
-            val x = l.blockX.coerceIn(inner.min.x, inner.max.x)
-            val z = l.blockZ.coerceIn(inner.min.z, inner.max.z)
+            // A round arena's square bounds have wall in the corners: use the entry spot instead of clamping.
+            val x = if (round) layout.padsA.first().x else l.blockX.coerceIn(inner.min.x, inner.max.x)
+            val z = if (round) layout.padsA.first().z else l.blockZ.coerceIn(inner.min.z, inner.max.z)
             p.teleport(Location(world, x + 0.5, (o.min.y + 1).toDouble(), z + 0.5, l.yaw, l.pitch))
         }
     }
