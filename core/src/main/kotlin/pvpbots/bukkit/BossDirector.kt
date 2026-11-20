@@ -9,6 +9,7 @@ import org.bukkit.Location
 import org.bukkit.Particle
 import org.bukkit.Sound
 import org.bukkit.entity.Player
+import org.bukkit.util.Vector
 import pvpbots.arena.ArenaLayout
 import pvpbots.arena.ArenaRecord
 import pvpbots.arena.Preset
@@ -66,7 +67,11 @@ class BossDirector(private val plugin: PvpBotsPlugin) {
     /** Real players standing in a boss arena's region (as the region watcher reports it), by arena name. */
     private val inRegion = HashMap<UUID, String>()
 
-    /** Winners who were dead at the kill: their rewards wait until they are alive again (a dead player's inventory is lost on respawn). */
+    /**
+     * Winners who were dead at the kill: their rewards wait until they are alive again (a dead player's inventory is
+     * lost on respawn), also across a logout (delivered once they are back online and alive). Memory only: cleared by
+     * [shutdown] (`/pvpbots reload`, `clear`, plugin disable), so rewards still pending at a restart are lost.
+     */
     private val pendingRewards = HashMap<UUID, MutableList<BossType>>()
     private val warned = HashSet<String>()
 
@@ -84,9 +89,9 @@ class BossDirector(private val plugin: PvpBotsPlugin) {
         for (a in arenas.values) if (id in a.enc.participants) guard(a) { run(a, a.enc.playerDied(id)) }
     }
 
+    /** A real player logged out. Their pending rewards (if any) stay: they are given after the next join, once alive. */
     fun onQuit(id: UUID) {
         inRegion.remove(id)
-        pendingRewards.remove(id)
     }
 
     /** The boss arena [name] is being removed: its boss goes now, bars are hidden, the encounter is forgotten. */
@@ -124,6 +129,7 @@ class BossDirector(private val plugin: PvpBotsPlugin) {
         for (a in arenas.values.toList()) close(a)
         arenas.clear()
         inRegion.clear()
+        pendingRewards.clear()
     }
 
     // ---- queries ----
@@ -190,12 +196,14 @@ class BossDirector(private val plugin: PvpBotsPlugin) {
     }
 
     /**
-     * [raw] damage from [attacker] to the boss of [arena]'s pool (FIGHT only; an attacker outside the arena is
-     * ignored). Returns what the pool lost. At 0 the boss dies on the next tick.
+     * [raw] damage from [attacker] to the boss of [arena]'s pool (FIGHT only; an attacker outside the arena, or not a
+     * participant by game mode (creative, spectator), is ignored). Returns what the pool lost. At 0 the boss dies on
+     * the next tick.
      */
     fun damageFrom(arena: String, attacker: Player, raw: Double): Double {
         val a = arenas[arena] ?: return 0.0
         if (a.enc.state != BossEncounter.State.FIGHT || a.bossId == null || a.deadPending) return 0.0
+        if (attacker.gameMode != GameMode.SURVIVAL && attacker.gameMode != GameMode.ADVENTURE) return 0.0
         if (arenaOf(attacker.uniqueId) != arena) return 0.0
         val c = a.controller
         val taken = a.health.hit(raw, recovering = c?.recovering == true, roaring = c?.roaring == true)
@@ -266,6 +274,7 @@ class BossDirector(private val plugin: PvpBotsPlugin) {
         val c0 = a.rec.padsB.first()
         if (!insideWall(a.rec, bot) || bot.location.y < c0.y - 1.0 || bot.location.y > c0.y + ArenaLayout.BOSS_CLEAR_HEIGHT + 4.0) {
             bot.teleport(spawnPoint(a, bot.world))
+            bot.velocity = Vector() // a mid-leap boss keeps no momentum to carry it back out
             bot.fallDistance = 0f
             c.onTeleportedBack()
         }
@@ -411,11 +420,7 @@ class BossDirector(private val plugin: PvpBotsPlugin) {
         val it = pendingRewards.entries.iterator()
         while (it.hasNext()) {
             val (id, types) = it.next()
-            val p = player(id)
-            if (p == null) {
-                it.remove()
-                continue
-            }
+            val p = player(id) ?: continue // offline: kept until they are back
             if (p.isDead || !p.isValid) continue
             it.remove()
             types.forEach { t -> give(p, t) }
