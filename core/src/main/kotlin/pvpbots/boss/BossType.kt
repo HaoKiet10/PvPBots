@@ -20,7 +20,15 @@ data class Move(
     val cooldownTicks: Int,
     val recoveryTicks: Int,
     val params: Map<String, Double>,
-)
+) {
+    /** A move that hurts players; it needs a readable tell. */
+    val isDamaging: Boolean get() = damage > 0.0 && type in DAMAGING_TYPES
+
+    companion object {
+        val DAMAGING_TYPES = setOf(MoveType.COMBO, MoveType.LEAP_SLAM, MoveType.SHOCKWAVE, MoveType.VOLLEY, MoveType.CHARGED_SHOT)
+        const val MIN_TELEGRAPH_TICKS = 10
+    }
+}
 
 /**
  * A phase starting when health fraction is at or below [at]. Moves named in any phase's [addMoves] are inactive until
@@ -33,7 +41,13 @@ data class Phase(
     val telegraphScale: Double,
     val addMoves: List<String>,
     val removeMoves: List<String>,
-)
+) {
+    /** The wind-up of [move] in this phase: scaled, but a damaging move never gets a tell shorter than 10 ticks. */
+    fun scaledTelegraph(move: Move): Int {
+        val t = Math.round(move.telegraphTicks * telegraphScale).toInt()
+        return if (move.isDamaging) maxOf(Move.MIN_TELEGRAPH_TICKS, t) else maxOf(0, t)
+    }
+}
 
 data class LootEntry(val item: String, val amount: Int, val chance: Double)
 

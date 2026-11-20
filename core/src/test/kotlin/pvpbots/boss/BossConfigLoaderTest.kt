@@ -40,6 +40,58 @@ class BossConfigLoaderTest {
         assertNotNull(ash.loot.guaranteed.firstOrNull())
     }
 
+    /** Vanilla armour formula for full unenchanted diamond (armor 20, toughness 8). */
+    private fun takenOnDiamond(raw: Double): Double {
+        val reduction = minOf(20.0, maxOf(20.0 / 5.0, 20.0 - raw / (2.0 + 8.0 / 4.0))) / 25.0
+        return raw * (1.0 - reduction)
+    }
+
+    private fun hitsToKill(raw: Double) = Math.ceil(20.0 / takenOnDiamond(raw)).toInt()
+
+    @Test fun bigMovesKillFullDiamondInFourToFiveHits() {
+        val big = setOf(MoveType.LEAP_SLAM, MoveType.SHOCKWAVE, MoveType.CHARGED_SHOT)
+        for (b in BossConfigLoader.load(bundled()).value.values) {
+            for (m in b.moves.filter { it.isDamaging }) {
+                val n = hitsToKill(m.damage)
+                assertTrue(n >= 4, "${b.id}.${m.id} kills in $n hits")
+                if (m.type in big) assertTrue(n in 4..5, "${b.id}.${m.id} kills in $n hits")
+            }
+        }
+    }
+
+    @Test fun phaseScaledTelegraphKeepsTenTickTell() {
+        for (b in BossConfigLoader.load(bundled()).value.values) {
+            for (p in b.phases) for (m in b.moves.filter { it.isDamaging }) {
+                assertTrue(p.scaledTelegraph(m) >= 10, "${b.id}.${m.id} at ${p.at}")
+            }
+        }
+        val p = Phase(0.5, false, 1.0, 0.5, emptyList(), emptyList())
+        val slam = Move("s", MoveType.LEAP_SLAM, 1, 0.0..5.0, 12, 10.0, 0, 0, emptyMap())
+        val step = Move("b", MoveType.BACKSTEP, 1, 0.0..5.0, 6, 0.0, 0, 0, emptyMap())
+        assertEquals(10, p.scaledTelegraph(slam))
+        assertEquals(3, p.scaledTelegraph(step))
+    }
+
+    @Test fun roarWeightDefaultsToZeroAndBadKeysWarn() {
+        @Suppress("UNCHECKED_CAST")
+        val r = BossConfigLoader.load(
+            mapOf<Any, Any?>(
+                "x" to mapOf(
+                    "base-health" to 100,
+                    "moves" to mapOf<Any, Any?>(
+                        "roar" to mapOf("type" to "roar"),
+                        5 to mapOf("type" to "combo"),
+                        "ok" to mapOf("type" to "combo", "damage" to 5, "telegraph-ticks" to 12),
+                    ),
+                ),
+                7 to mapOf("base-health" to 1),
+            ) as Map<String, Any?>,
+        )
+        assertEquals(0, r.value.getValue("x").moves.first { it.id == "roar" }.weight)
+        assertTrue(r.warnings.any { it.startsWith("bosses.7") }, r.warnings.toString())
+        assertTrue(r.warnings.any { it.startsWith("bosses.x.moves.5") }, r.warnings.toString())
+    }
+
     @Test fun shortTelegraphRaisedWithWarning() {
         val r = BossConfigLoader.load(
             mapOf(

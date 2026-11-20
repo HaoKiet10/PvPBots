@@ -5,16 +5,20 @@ import pvpbots.config.Loaded
 
 /** Loads the `bosses:` section. Warnings are prefixed `bosses.<id>.<key>`; broken bosses/moves are skipped. */
 object BossConfigLoader {
-    const val MIN_TELEGRAPH_TICKS = 10
+    const val MIN_TELEGRAPH_TICKS = Move.MIN_TELEGRAPH_TICKS
 
-    private val DAMAGING = setOf(MoveType.COMBO, MoveType.LEAP_SLAM, MoveType.SHOCKWAVE, MoveType.VOLLEY, MoveType.CHARGED_SHOT)
+    private val DAMAGING = Move.DAMAGING_TYPES
     private val COMMON_MOVE_KEYS = setOf("type", "weight", "range", "telegraph-ticks", "damage", "cooldown-ticks", "recovery-ticks")
 
     fun load(section: Map<String, Any?>): Loaded<Map<String, BossType>> {
         val warnings = mutableListOf<String>()
         val root = ConfigReader(section, "bosses", warnings)
         val out = LinkedHashMap<String, BossType>()
-        for (id in section.keys) {
+        for (id in (section as Map<*, *>).keys) {
+            if (id !is String) {
+                warnings += "bosses.$id: boss ids must be text, entry skipped"
+                continue
+            }
             val r = root.section(id) ?: continue // a non-section entry was already warned about
             parseBoss(id, section[id] as Map<*, *>, r, warnings)?.let { out[id] = it }
         }
@@ -135,7 +139,11 @@ object BossConfigLoader {
         val moves = r.section("moves")!!
         val out = ArrayList<Move>()
         for (key in raw.keys) {
-            val mid = key.toString()
+            if (key !is String) {
+                m0Warn(r, key, warnings)
+                continue
+            }
+            val mid = key
             val m = moves.section(mid) ?: continue
             val mraw = raw[key] as Map<*, *>
             val typeName = (mraw["type"] as? String)?.trim()?.replace('-', '_')?.uppercase()
@@ -157,7 +165,7 @@ object BossConfigLoader {
             out += Move(
                 id = mid,
                 type = type,
-                weight = m.int("weight", 1),
+                weight = m.int("weight", if (type == MoveType.ROAR) 0 else 1),
                 range = parseRange(m, mraw["range"]),
                 telegraphTicks = telegraph,
                 damage = damage,
@@ -167,6 +175,10 @@ object BossConfigLoader {
             )
         }
         return out
+    }
+
+    private fun m0Warn(r: ConfigReader, key: Any?, warnings: MutableList<String>) {
+        warnings += "${r.key("moves")}.$key: move ids must be text, move skipped"
     }
 
     private fun parseRange(m: ConfigReader, raw: Any?): ClosedFloatingPointRange<Double> {
