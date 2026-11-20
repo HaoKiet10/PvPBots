@@ -29,6 +29,8 @@ class PvpBotsPlugin : JavaPlugin() {
         private set
     lateinit var kitArenas: KitArenaService
         private set
+    lateinit var bossDirector: BossDirector
+        private set
 
     private var flagsRegistered = false
     private var running = false
@@ -45,6 +47,9 @@ class PvpBotsPlugin : JavaPlugin() {
                     }
                 }
                 director.onAreaChange(player, from, to, botManager.nowMs())
+                (Bukkit.getPlayer(player) ?: Bukkit.getEntity(player) as? org.bukkit.entity.Player)?.let { p ->
+                    if (this@PvpBotsPlugin::bossDirector.isInitialized) bossDirector.onAreaChange(p, from, to)
+                }
             }
 
             override fun maxBots(): Int = botManager.config.settings.maxBots
@@ -89,6 +94,10 @@ class PvpBotsPlugin : JavaPlugin() {
         // Each team round in a kit arena: the players get a fresh kit when they are placed on their pads.
         botManager.playerPlaced = { p, area -> if (area.kit != null) kitArenas.refill(p.uniqueId) }
         arenaService.onArenaRelease = { name -> kitArenas.releaseArena(name) }
+        // Boss encounters start IDLE on every enable: nothing of a fight survives a restart.
+        bossDirector = BossDirector(this)
+        arenaService.onBossArenaRelease = { name -> bossDirector.releaseArena(name) }
+        arenaService.bossState = { name -> bossDirector.state(name) }
         // Each new round in a kit arena: the owner gets a fresh kit when their trainer spawns.
         botManager.spawnListeners += { r ->
             val key = r.key
@@ -98,7 +107,7 @@ class PvpBotsPlugin : JavaPlugin() {
         kitArenas.restoreAllOnline()
         arenaService.resumeAll()
 
-        server.pluginManager.registerEvents(DamageListener(botManager), this)
+        server.pluginManager.registerEvents(DamageListener(botManager) { bossDirector }, this)
         server.pluginManager.registerEvents(BotLifecycleListener(this), this)
         server.pluginManager.registerEvents(KitArenaListener(this), this)
         regionWatcher.start()
@@ -129,6 +138,7 @@ class PvpBotsPlugin : JavaPlugin() {
         running = false
         tickTask?.cancel()
         arenaService.stop()
+        TickIsolation.guard({ bossDirector.shutdown() }) { e -> logger.log(Level.SEVERE, "Ending the boss encounters failed", e) }
         director.shutdown()
         botManager.removeAll()
         regionWatcher.stop()
@@ -139,6 +149,7 @@ class PvpBotsPlugin : JavaPlugin() {
         val tick = Bukkit.getCurrentTick().toLong()
         director.tick(tick * 50L)
         botManager.tickBots(tick)
+        TickIsolation.guard({ bossDirector.tick() }) { e -> logger.log(Level.SEVERE, "Boss encounters failed this tick", e) }
         TickIsolation.guard({ arenaService.tick() }) { e -> logger.log(Level.SEVERE, "Arena jobs failed this tick", e) }
     }
 
@@ -155,6 +166,8 @@ class PvpBotsPlugin : JavaPlugin() {
      * BotPort callback. [maxBotsOverride] is for the self-test.
      */
     fun newDirector(maxBotsOverride: Int?) {
+        // Bosses first: they give their slots back to the old director and hide their bars.
+        if (this::bossDirector.isInitialized) bossDirector.shutdown()
         if (this::director.isInitialized) director.shutdown()
         if (this::botManager.isInitialized) botManager.removeAll()
         val settings = botManager.config.settings
@@ -168,6 +181,7 @@ class PvpBotsPlugin : JavaPlugin() {
 
     /** /pvpbots reload: ends all sessions, re-reads config.yml, starts over. */
     fun reload() {
+        bossDirector.shutdown()
         director.shutdown()
         botManager.removeAll()
         botManager.config = loadBotConfig()

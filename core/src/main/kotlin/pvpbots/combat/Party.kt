@@ -1,6 +1,7 @@
 package pvpbots.combat
 
 import pvpbots.combat.Party.Ally
+import pvpbots.combat.Party.Boss
 import pvpbots.combat.Party.RealPlayer
 import pvpbots.combat.Party.TeamBot
 import pvpbots.combat.Party.Trainer
@@ -14,22 +15,33 @@ sealed interface Party {
 
     /** A filler bot of a team round: [arena] names the round (its region id), [side] the team it fights for. */
     data class TeamBot(val botId: UUID, val arena: String, val side: Side) : Party
+    /** The boss bot of the boss arena named [arena]. */
+    data class Boss(val botId: UUID, val arena: String) : Party
     data object Mob : Party
     data object Other : Party
 }
 
 object DamagePolicy {
     /**
-     * [sideOf] gives (arena, side) for any player or bot seated in a running team round; [bossArenaOf] the boss arena
-     * an entity fights in (bosses arrive in a later release; callers pass `{ null }` until then).
+     * [sideOf] gives (arena, side) for any player or bot seated in a running team round; [bossArenaOf] the boss arena a
+     * real player stands in (inside its region and its round wall), or null.
+     *
+     * Bosses: a boss and a real player inside its arena hurt each other (the boss's own health is a plugin pool, see
+     * the damage listener); bosses never hurt bots and bots never hurt bosses; two real players never hurt each other
+     * while either stands in a boss arena.
      */
-    @Suppress("UNUSED_PARAMETER")
     fun allow(
         attacker: Party,
         victim: Party,
         sideOf: (UUID) -> Pair<String, Side>?,
         bossArenaOf: (UUID) -> String?,
     ): Boolean {
+        if (attacker is Boss || victim is Boss) {
+            val boss = (attacker as? Boss) ?: (victim as Boss)
+            val other = if (attacker is Boss) victim else attacker
+            return other is RealPlayer && bossArenaOf(other.id) == boss.arena
+        }
+        if (attacker is RealPlayer && victim is RealPlayer && (bossArenaOf(attacker.id) != null || bossArenaOf(victim.id) != null)) return false
         // Team rounds: only enemies of the same round hurt each other; nobody else is touched by, or touches, a seated one.
         val a = seat(attacker, sideOf)
         val v = seat(victim, sideOf)

@@ -288,7 +288,7 @@ class SelfTest(
                 "zombie damage to dummies ${"%.1f".format((damageTaken[p1.id] ?: 0.0) + (damageTaken[p2.id] ?: 0.0))}" +
                 "; zombie damage events applied $zombieHits (${"%.1f".format(zombieDamage)} hp), cancelled $zombieHitsCancelled; zombies: " +
                 zombies.joinToString(" ") { "[hp ${"%.1f".format(it.health)} lived ${it.ticksLived} ${it.location.chunk.loadLevel} valid ${it.isValid}]" } +
-                (if (cleared < 0) "; bots: " + manager.records().filter { it.key == squadKey }.joinToString(" | ") { it.player.name + " " + it.controller.debugSummary() } else ""),
+                (if (cleared < 0) "; bots: " + manager.records().filter { it.key == squadKey }.joinToString(" | ") { it.player.name + " " + it.controller?.debugSummary() } else ""),
         )
 
         // A2: grace period (leave-grace-seconds, 10 s = 200 ticks)

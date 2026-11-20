@@ -58,7 +58,7 @@ internal class SkillSelfTest(private val t: SelfTest, private val plugin: PvpBot
             bot.player.health = 2.0 // bot at 10%, player full: lead far beyond the dead zone
             val adjusted = waitUntil(s.adjustEverySeconds * 20 + 40) { tracker.current != s.startRating }
             val current = tracker.current
-            val retuned = bot.controller.profile == SkillBlender.retune(expectedStart, current, anchors) && bot.controller.profile != expectedStart
+            val retuned = bot.controller?.profile == SkillBlender.retune(expectedStart, current, anchors) && bot.controller?.profile != expectedStart
             val expected = RatingUpdate.after(s.startRating, current, Outcome.PLAYER_WON, s)
             bot.player.health = 0.0
             val ended = waitUntil(40) { manager.tracker(owner.id) == null }
@@ -93,7 +93,7 @@ internal class SkillSelfTest(private val t: SelfTest, private val plugin: PvpBot
             val trackerDuringFight = manager.tracker(owner.id)
             bot.player.health = 2.0
             yield(s.adjustEverySeconds * 20 + 20) // an adaptive fight would have adjusted by now
-            val hard = bot.controller.profile == manager.config.profiles.getValue(Difficulty.HARD)
+            val hard = bot.controller?.profile == manager.config.profiles.getValue(Difficulty.HARD)
             bot.player.health = 0.0
             val ended = waitUntil(40) { !manager.isBot(bot.id) }
             yield(3)

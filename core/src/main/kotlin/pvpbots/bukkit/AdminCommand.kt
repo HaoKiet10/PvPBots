@@ -42,7 +42,7 @@ class AdminCommand(private val plugin: PvpBotsPlugin) : CommandExecutor, TabComp
         sender.sendMessage(
             "PvpBots: bots ${slots.used()}/${slots.capacity()} (live ${m.count()}), queued ${slots.queued()}, " +
                 "pending spawns ${d.pendingSpawns()}, sessions: ${d.trainerCount()} trainer, ${d.squadCount()} squad, " +
-                "avg bot tick ${"%.3f".format(m.averageTickMs())} ms (last 100 ticks)",
+                "bosses ${plugin.bossDirector.bossCount()}, avg bot tick ${"%.3f".format(m.averageTickMs())} ms (last 100 ticks)",
         )
     }
 

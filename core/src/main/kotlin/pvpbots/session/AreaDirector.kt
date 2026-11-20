@@ -38,6 +38,7 @@ class AreaDirector(
     private class Grant(val key: SessionKey)
     private class DoSpawn(val e: Effect)
     private class Retry(val dueMs: Long, val key: SessionKey)
+    private object FreeSlot
 
     private val trainers = HashMap<UUID, TrainerSession>()
     private val squads = HashMap<SessionKey.Squad, AllySquad>()
@@ -102,6 +103,7 @@ class AreaDirector(
             is SessionKey.Trainer -> trainers[key.owner]?.takeIf { it.botId() == botId }?.botDied(nowMs).orEmpty()
             is SessionKey.Squad -> squads[key]?.allyDied(botId, nowMs).orEmpty()
             is SessionKey.Team -> teams[key]?.botDied(botId, nowMs).orEmpty()
+            is SessionKey.Boss -> emptyList()
         }
         run(effects, nowMs)
         // Squad deaths emit no RemoveBot; make sure the dead bot's slot is freed either way.
@@ -130,6 +132,7 @@ class AreaDirector(
             is SessionKey.Team -> teams[key]?.let { r ->
                 if (n >= MAX_FAILURES) giveUpTeam(key, n) else r.botDied(botId, nowMs)
             }.orEmpty()
+            is SessionKey.Boss -> emptyList()
         }
         run(effects, nowMs)
         if (botId in alive) run(listOf(Effect.RemoveBot(botId)), nowMs)
@@ -162,6 +165,18 @@ class AreaDirector(
         spawnPending(nowMs)
         trainers.values.removeIf { if (it.state() == TrainerSession.State.ENDED) { forget(it.key); true } else false }
         squads.values.removeIf { if (it.state() == AllySquad.State.ENDED) { forget(it.key); true } else false }
+    }
+
+    /**
+     * A slot taken outside this director (a boss: [BotSlots.request] while a slot was free and nothing queued) is
+     * free again; queued sessions get it as if one of their own bots had been removed.
+     */
+    fun externalSlotFreed(nowMs: Long) {
+        if (shutDown) {
+            slots.release(1)
+            return
+        }
+        run(listOf(FreeSlot), nowMs)
     }
 
     /** Ends everything (all bots removed), clears the slot and spawn queues, and turns every later call into a no-op. */
@@ -218,7 +233,7 @@ class AreaDirector(
         is SessionKey.Squad -> true
         is SessionKey.Team -> teams[key]?.state() == TeamRound.State.FIGHTING
         is SessionKey.Trainer -> trainers[key.owner]?.fighting() == true
-        null -> false
+        is SessionKey.Boss, null -> false
     }
 
     // ---- area transitions ----
@@ -366,6 +381,7 @@ class AreaDirector(
         is SessionKey.Trainer -> trainers[key.owner]?.let { it.state() != TrainerSession.State.ENDED } == true
         is SessionKey.Squad -> squads[key]?.let { it.state() != AllySquad.State.ENDED } == true
         is SessionKey.Team -> teams[key]?.let { it.state() != TeamRound.State.ENDED } == true
+        is SessionKey.Boss -> false
     }
 
     private fun run(effects: List<Any>, nowMs: Long) {
@@ -380,6 +396,7 @@ class AreaDirector(
                     when (w) {
                         is Grant -> grant(w.key)
                         is DoSpawn -> spawn(w.e)
+                        FreeSlot -> releaseSlot()
                         is Effect -> execute(w)
                     }
                 } catch (e: VirtualMachineError) {
@@ -405,6 +422,7 @@ class AreaDirector(
             is SessionKey.Trainer -> trainers[key.owner]?.slotGranted(now)
             is SessionKey.Squad -> squads[key]?.slotGranted(now)
             is SessionKey.Team -> teams[key]?.slotGranted(now)
+            is SessionKey.Boss -> null // never queued here (the boss director only takes a slot that is free right away)
         }
         if (effects.isNullOrEmpty()) releaseSlot() else work.addAll(effects)
     }
@@ -548,6 +566,7 @@ class AreaDirector(
                         return
                     }
                 }
+                is SessionKey.Boss -> Unit
             }
             retries += Retry(now + RETRY_MS, key)
             return
@@ -557,6 +576,7 @@ class AreaDirector(
             is SessionKey.Trainer -> trainers[key.owner]?.botSpawned(id, now)
             is SessionKey.Squad -> squads[key]?.botSpawned(id, now)
             is SessionKey.Team -> teams[key]?.botSpawned((e as Effect.SpawnTeamBot).side, id, now)
+            is SessionKey.Boss -> null
         }
         work.addAll(follow ?: listOf(Effect.RemoveBot(id)))
     }

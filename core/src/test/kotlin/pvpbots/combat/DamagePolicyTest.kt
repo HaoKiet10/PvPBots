@@ -1,6 +1,7 @@
 package pvpbots.combat
 
 import pvpbots.combat.Party.Ally
+import pvpbots.combat.Party.Boss
 import pvpbots.combat.Party.Mob
 import pvpbots.combat.Party.Other
 import pvpbots.combat.Party.RealPlayer
@@ -99,5 +100,36 @@ class DamagePolicyTest {
         assertFalse(allow(RealPlayer(outsider), RealPlayer(p3), sideOf))
         // outside team rounds nothing changes
         assertTrue(allow(RealPlayer(outsider), RealPlayer(UUID(3, 24)), sideOf))
+    }
+
+    private val inArena: (UUID) -> String? = { if (it == owner) "pit" else if (it == other) "cave" else null }
+
+    private fun allowBoss(a: Party, v: Party): Boolean = DamagePolicy.allow(a, v, none, inArena)
+
+    @Test
+    fun boss_onlyFightsPlayersInsideItsArena() {
+        val boss = Boss(bot, "pit")
+        assertTrue(allowBoss(boss, RealPlayer(owner)))
+        assertTrue(allowBoss(RealPlayer(owner), boss))
+        assertFalse(allowBoss(boss, RealPlayer(other))) // another boss arena
+        assertFalse(allowBoss(RealPlayer(other), boss))
+        assertFalse(allowBoss(RealPlayer(UUID(3, 40)), boss)) // outside every boss arena
+        assertFalse(allowBoss(boss, Trainer(UUID(3, 41), owner)))
+        assertFalse(allowBoss(Trainer(UUID(3, 41), owner), boss))
+        assertFalse(allowBoss(Ally(UUID(3, 42)), boss))
+        assertFalse(allowBoss(boss, Ally(UUID(3, 42))))
+        assertFalse(allowBoss(TeamBot(UUID(3, 43), "t", Side.A), boss))
+        assertFalse(allowBoss(boss, Boss(UUID(3, 44), "pit")))
+        assertFalse(allowBoss(Mob, boss))
+    }
+
+    @Test
+    fun playersNeverHurtEachOtherInBossArenas() {
+        val free = UUID(3, 45)
+        assertFalse(allowBoss(RealPlayer(owner), RealPlayer(free)))
+        assertFalse(allowBoss(RealPlayer(free), RealPlayer(owner)))
+        assertFalse(allowBoss(RealPlayer(owner), RealPlayer(other)))
+        assertTrue(allowBoss(RealPlayer(free), RealPlayer(UUID(3, 46))))
+        assertTrue(allowBoss(RealPlayer(owner), Mob)) // mobs in the arena are fair game
     }
 }

@@ -13,6 +13,7 @@ import org.bukkit.event.entity.EntityDamageEvent
 import pvpbots.adapter.BotAdapter
 import pvpbots.adapter.BotHandle
 import pvpbots.adapter.BotSpec
+import pvpbots.boss.BossType
 import pvpbots.math.Aim
 import pvpbots.math.BlockPos
 import pvpbots.math.Rotation
@@ -42,7 +43,8 @@ data class BotRecord(
     val role: Role,
     val profile: DifficultyProfile,
     val area: AreaRef,
-    val controller: BotController,
+    /** The trainer/ally/filler loop; null for a boss (the boss director drives it with a [BossController]). */
+    val controller: BotController?,
     /** The side a team-round filler fights for; null for every other bot. */
     val side: Side? = null,
 ) {
@@ -198,6 +200,54 @@ class BotManager(
         }
     }
 
+    /**
+     * Spawns the boss of [arena] standing at [at] through the adapter: named after the type (made a valid, unused
+     * player name), the type's skin, gear with enchantments, knockback resistance and move speed. The bot is
+     * registered with [SessionKey.Boss] and no [BotController]; the caller owns its slot and drives it. Returns null
+     * (logged) on failure, with nothing left in the world.
+     */
+    fun spawnBoss(type: BossType, arena: String, area: AreaRef, at: Location): BotRecord? {
+        val start = System.nanoTime()
+        try {
+            val id = UUID.randomUUID()
+            val handle = adapter.spawn(BotSpec(bossName(type.name), id, type.skin?.value, type.skin?.signature), at)
+            try {
+                val p = handle.bukkit
+                BossGear.apply(p, type) { msg -> logger.warning("Boss ${type.id}: $msg") }
+                applyDistances(p)
+                val profile = config.profiles.getValue(Difficulty.HARD)
+                val record = BotRecord(handle, SessionKey.Boss(arena), Role.BOSS, profile, area, null)
+                bots[handle.id] = record
+                spawnObserver?.invoke(record)
+                for (l in spawnListeners) TickIsolation.guard({ l(record) }) { e -> logFailure(e, "Spawn listener failed for boss ${handle.id}", Level.SEVERE) }
+                return record
+            } catch (e: VirtualMachineError) {
+                throw e
+            } catch (e: Throwable) {
+                bots.remove(handle.id)
+                TickIsolation.guard({ adapter.remove(handle) }) { r -> e.addSuppressed(r) }
+                throw e
+            }
+        } catch (e: VirtualMachineError) {
+            throw e
+        } catch (e: Throwable) {
+            logFailure(e, "Boss spawn failed for ${type.id} in arena $arena", Level.SEVERE)
+            return null
+        } finally {
+            spawnNanos += System.nanoTime() - start
+        }
+    }
+
+    /** [display] cut to a valid player name (letters, digits, `_`, at most 16), never the name of an online player or bot. */
+    private fun bossName(display: String): String {
+        val base = display.replace(Regex("[^A-Za-z0-9_]"), "_").take(16).ifEmpty { "Boss" }
+        var name = base
+        while (Bukkit.getPlayerExact(name) != null || bots.values.any { it.player.name.equals(name, ignoreCase = true) }) {
+            name = base.take(11) + "_" + "%04x".format(rng.nextInt(0x10000))
+        }
+        return name
+    }
+
     /** The pad block of [side] number [pad] in the arena named by [area], as a standing position (pad + 1 up), or null. */
     private fun padStand(area: AreaRef, side: Side, pad: Int): BlockPos? {
         val pads = area.arena?.let { teamPads(it, side) }?.takeIf { it.isNotEmpty() } ?: return null
@@ -304,7 +354,7 @@ class BotManager(
             when {
                 bots[r.id] !== r -> {} // removed by an earlier bot's tick
                 r.removeFailedAtTick >= 0 -> if (tick - r.removeFailedAtTick >= 20) remove(r.id)
-                else -> r.controller.tick(tick)
+                else -> r.controller?.tick(tick)
             }
         }) { r, e ->
             logFailure(e, "Bot ${r.handle} (session ${r.key}) failed and was removed", Level.SEVERE)
@@ -345,7 +395,8 @@ class BotManager(
         if (!playerFrac.isFinite() || !botFrac.isFinite()) return tr.resetWindow() // no signal this window
         val before = tr.current
         tr.current = FightJudge.next(before, tr.start, tr.closeWindow(playerFrac, botFrac), config.settings.skill)
-        if (tr.current != before) record.controller.retune(SkillBlender.retune(record.controller.profile, tr.current, config.profiles))
+        val c = record.controller ?: return tr.resetWindow()
+        if (tr.current != before) c.retune(SkillBlender.retune(c.profile, tr.current, config.profiles))
     }
 
     /** Health as a fraction of max health; NaN or infinite when max health is 0 (the caller skips such a window). */

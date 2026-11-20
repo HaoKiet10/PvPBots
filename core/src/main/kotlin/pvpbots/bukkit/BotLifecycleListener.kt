@@ -32,6 +32,7 @@ class BotLifecycleListener(private val plugin: PvpBotsPlugin) : Listener {
             })
         } else {
             plugin.director.onPlayerDeath(id, manager.nowMs())
+            TickIsolation.guard({ plugin.bossDirector.onPlayerDeath(id) }) { e -> plugin.logger.log(java.util.logging.Level.SEVERE, "Boss death handling failed", e) }
         }
     }
 
@@ -44,6 +45,7 @@ class BotLifecycleListener(private val plugin: PvpBotsPlugin) : Listener {
         }
         plugin.regionWatcher.forget(id)
         plugin.director.onQuit(id, manager.nowMs())
+        plugin.bossDirector.onQuit(id)
     }
 
     /** A trainer is never spawned while its owner is dead; the director releases a held spawn here. */
