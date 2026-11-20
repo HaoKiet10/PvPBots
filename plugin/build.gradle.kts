@@ -87,7 +87,7 @@ tasks.runServer {
 /**
  * Starts a dev server that runs the in-server self-test at startup and shuts down; then checks
  * plugins/PvpBots/selftest-result.txt and scans the world folders for files named after any spawned bot (D1).
- * `-Pselftest=trainer|ally|all|load:N` picks the checks (default all; `load:N` is the N-bot performance check).
+ * `-Pselftest=trainer|ally|all|load:N|load-boss:N` picks the checks (default all; `load:N` is the N-bot performance check, `load-boss:N` the N-boss one).
  */
 fun registerSelfTest(name: String, server: DevServer, runDir: String, port: Int) = tasks.register<RunServer>(name) {
     group = "verification"

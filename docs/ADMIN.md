@@ -29,12 +29,15 @@ filled up with bots** (see "Team rounds"), and admins can build **boss arenas** 
 
 | Flag | Values | Default | Used by |
 |---|---|---|---|
-| `pvpbot-role` | `trainer` \| `ally` \| `boss` | unset = no bots | all |
+| `pvpbot-role` | `trainer` \| `ally` (set by hand); `boss` (set by `/pvpbots boss create` only) | unset = no bots | all |
 | `pvpbot-difficulty` | `easy` \| `medium` \| `hard` \| `pro` | unset: **adaptive** for `trainer` (new in v2), `medium` for `ally` | both |
 | `pvpbot-count` | integer >= 1 | `5` | ally |
 | `pvpbot-boss` | boss type id (a key of `bosses:`) | unset | boss |
 
-`boss` and `pvpbot-boss` are set by `/pvpbots boss create` on the region it builds; you do not set them by hand.
+`boss` and `pvpbot-boss` are set by `/pvpbots boss create` on the region it builds; you do not set them by hand. A
+hand-drawn region with `pvpbot-role boss` does nothing: a boss arena needs the arena record that `boss create` writes.
+WorldGuard also accepts `pvpbot-role team`, but it is inert (no bots, no rounds); team rounds run in `squad` and
+`team` arenas built by `/pvpbots arena create`, which use the `trainer` role.
 
 ```
 /rg flag arena_1 pvpbot-role trainer
@@ -206,10 +209,13 @@ hand-drawn regions keep the personal 1v1 trainer.
   no in-fight adjustment in team rounds. Players are teleported onto their team's pads at the start of the countdown.
 - **Bot cap and shrinking.** Each filler bot needs a `max-bots` slot. If the slots are not all there after **10 s**,
   the round shrinks to the largest equal size the free slots allow (for example 3v3 in a `team` arena); the round
-  never starts uneven.
+  never starts uneven. A filler that dies, fails or cannot spawn before the fight is replaced (a countdown in progress
+  goes back to waiting for it); if the replacement does not come, the round shrinks again 10 s later, down to players
+  only when the split is even.
 - **Waiting.** A player who walks in mid-round, or dies, gets "Next round starts soon" and waits for the next round
   (they get no trainer meanwhile). A player who leaves mid-round is out; they get no result and no title.
-- **The round.** No friendly fire: teammates (players and bots) cannot hurt each other; enemies can. The round ends
+- **The round.** No friendly fire: teammates (players and bots) cannot hurt each other; enemies can, but only during
+  the fight (not while waiting for fillers, in the countdown or in the rematch wait). The round ends
   when one side has nobody left standing, or at `trainer.time-limit-seconds` (a draw). After
   `trainer.rematch-delay-seconds` a new split is made with everyone present. When fewer than two players are left
   for the next round, the team round ends and the arena goes back to personal trainers.
@@ -217,7 +223,10 @@ hand-drawn regions keep the personal 1v1 trainer.
   bot won, draw = draw. The rating moves by the result nudge only (`skill.win-bonus` / `skill.loss-penalty`).
   Rounds that never fought, or end with no result (arena removed, `/pvpbots reload`, `clear`), change nothing.
 - **Kit arenas** (`arena create ... <kit>`) work per player exactly as in "Kit arenas": stash, kit, restore.
-- **Damage.** Inside a round only members of different sides can hurt each other.
+- **Damage.** Inside a round only members of different sides can hurt each other, and only during the fight. Seated
+  players and outsiders cannot hurt each other. **Gap:** damage whose attacker is not a player or bot (a tamed wolf,
+  primed TNT, an end crystal, a lingering potion cloud, a wind charge) is not traced back to an owner and follows the
+  server's normal rules, so it can still hurt a teammate or a seated player.
 
 ## Boss arenas
 
@@ -251,8 +260,8 @@ the plugin itself blocks player-versus-player damage inside).
   drops as usual).
 - **Victory.** At 0 health: "BOSS DEFEATED" title and sound, the bar fades, rewards are given, then the cooldown.
 - **Cooldown.** For `cooldown-seconds` no boss spawns. Nobody is ejected; players inside see "The arena is quiet...
-  returns in m:ss". **The cooldown is in memory only: it is not kept across a server restart or `/pvpbots reload`**
-  (the boss is available again right after either).
+  returns in m:ss". **The cooldown is in memory only: it is not kept across a server restart, `/pvpbots reload` or
+  `/pvpbots clear`** (the boss is available again right after any of them).
 
 **Damage rules in boss arenas.**
 - Damage dealt to the boss is its **final damage** (after the boss's own armour and enchantments) subtracted from the
@@ -261,12 +270,16 @@ the plugin itself blocks player-versus-player damage inside).
   non-entity damage do nothing to it.
 - "Inside the arena" for the boss is **inside the region AND within the round wall** (horizontal radius 20 from the
   centre): the region's square corners outside the wall do not count. A boss that leaves is brought back to the centre.
-- **Players cannot hurt each other** in a boss arena. Bosses never target bots and bots never fight bosses (ally
+- **Players cannot hurt each other directly** in a boss arena (melee, arrows and other projectiles they shoot).
+  **Gap:** damage whose attacker is not a player (a tamed wolf, primed TNT, an end crystal, a lingering potion cloud,
+  a wind charge) is not traced back to its owner and follows the server's normal rules (`pvp allow` in the region), so
+  players can still hurt each other that way. Bosses never target bots and bots never fight bosses (ally
   squads and trainers ignore them).
 - Boss damage numbers are RAW attack damage dealt by the boss, so the target's armour, enchantments and absorption
   apply as in vanilla. Combo hits deal the configured `damage` per swing; weapon enchantments on the boss's main hand
   (fire aspect, sharpness) do **not** apply to combo swings. `knockback-resistance` is the base attribute value;
-  the boss's armour adds on top.
+  the boss's armour adds on top. Player hits on the boss are cancelled (they only lower the pool), so they never
+  knock it back anyway: the value only matters for explosions, wind charges and other knockback that reaches it.
 - **The boss has no plain melee.** All its damage comes from telegraphed moves, each with a tell of at least 10 ticks
   (it stops, raises its weapon, particles gather, a sound plays) before damage lands. It focuses the player who dealt
   the most damage in the last 10 s, with some randomness.
@@ -276,8 +289,10 @@ the plugin itself blocks player-versus-player damage inside).
 
 **Winners and rewards.** A winner is a player who dealt at least 1 damage to the boss in this fight and was inside
 the region when it died, or died inside it during the fight. At the kill the `BossDefeatedEvent` fires once (before
-any reward); then each winner gets personal loot (a winner who is dead gets it once alive again), `xp`, and the
-`commands` run from the console once per winner (`%player%`, `%boss%`).
+any reward); then each winner gets personal loot (a winner who is dead gets it once alive again, also after logging out
+from the death screen and joining back), `xp`, and the `commands` run from the console once per winner (`%player%`,
+`%boss%`). Rewards waiting for a dead winner are kept in memory only: a server restart, `/pvpbots reload` or
+`/pvpbots clear` before they are delivered loses them.
 
 ### The `bosses:` config
 
@@ -423,7 +438,7 @@ Each bot gets a random entry.
 | `/pvpbots clear` | `pvpbots.admin` | Removes every bot now. Players still inside a bot region get their bots back within a few seconds. |
 | `/pvpbots arena <create\|remove\|list\|kit> ...` | `pvpbots.admin` | Plugin-built arenas; see "Arenas built by the plugin". |
 | `/pvpbots boss <create\|remove\|list> ...` | `pvpbots.admin` | Boss arenas; see "Boss arenas". |
-| `/pvpbots selftest <trainer\|ally\|load N> confirm` | `pvpbots.debug` | Developer self-test. **Ends every live bot session**; runs in temporary `pvpbots_selftest*` worlds, which are unloaded and deleted afterwards. Without `confirm` it only explains this. |
+| `/pvpbots selftest <trainer\|ally\|load N> confirm` | `pvpbots.debug` | Developer self-test. **Ends every live bot session**; runs in temporary `pvpbots_selftest*` worlds, which are unloaded and deleted afterwards. Without `confirm` it only explains this. The boss load check (`load-boss:N`) is not an in-game mode: it runs only from Gradle, `./gradlew :plugin:selfTest -Pselftest=load-boss:N`. |
 
 Both permissions default to op.
 
