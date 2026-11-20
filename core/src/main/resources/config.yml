@@ -138,3 +138,224 @@ kits:
     shield: true
     bow: BOW
     arrows: 16
+
+# ---------------------------------------------------------------------------------------------------------------
+# Bosses (v3). Each key under `bosses:` is a boss type id, used by `/pvpbots boss create <name> <boss-type>`.
+# Every damage number is RAW: it is dealt as a normal attack, so armour, enchantments and absorption apply.
+# Rough guide against full diamond armour (20 armour, 8 toughness): raw 8 -> ~2.2 hp, raw 14 -> ~4.8 hp,
+# raw 16 -> ~5.8 hp, raw 18 -> ~6.8 hp of a 20 hp bar. The examples are tuned so the big moves (leap slam,
+# shockwave, charged shot) kill a full-diamond player in about 4-5 hits.
+#
+# Keys of a boss type:
+#   name                      boss bar / chat name
+#   skin                      optional signed texture { value, signature }, same format as `skins:` above
+#   base-health               health pool for ONE player (a plugin-side pool, may exceed 1024)
+#   health-per-extra-player   +fraction per extra player: max = base-health * (1 + this * (players - 1)). Default 0.6
+#   gear                      head / chest / legs / feet / main-hand / off-hand: material names
+#   enchants                  per gear slot: ENCHANTMENT: level
+#   move-speed                movement multiplier (1.0 = normal)
+#   knockback-resistance      0..1, default 0.8
+#   moves                     the moveset, see below
+#   phases                    health thresholds, see below
+#   loot                      personal loot per winner, see below
+#   xp                        XP points given to each winner
+#   commands                  console commands run once per winner; %player% and %boss% are replaced
+#   cooldown-seconds          after a kill the arena stays quiet this long. Default 600
+#
+# A move (the key is its id) has: type, weight (how often it is picked; 0 = never picked by chance),
+# range [min, max] (target distance in blocks where it may be used), telegraph-ticks (wind-up with a visible tell;
+# damaging moves need at least 10, lower values are raised to 10), damage, cooldown-ticks (before it can be
+# used again), recovery-ticks (afterwards the boss is slow and takes 1.5x damage), plus type-specific values:
+#   combo         hits, interval-ticks                 melee swings, each at full reach
+#   leap-slam     radius                               jumps to the target and lands with an area hit
+#   shockwave     radius, speed                        expanding ground ring; players jump it
+#   volley        arrows, spread, bursts (default 1)   arrows shot in a fan; bursts = how many volleys in a row
+#   charged-shot  (none)                               one long-telegraphed high damage arrow
+#   backstep      distance                             quick dash away, no damage, sets up ranged moves
+#   roar          invulnerable-ticks                   used by phase changes (give it weight 0)
+#
+# A phase starts when health fraction reaches `at`: roar (play the roar move), move-speed and telegraph-scale
+# (0.8 = 20% shorter tells) multipliers, add-moves / remove-moves (move ids). A move listed in any add-moves
+# is NOT available until that phase.
+#
+# loot: guaranteed entries always drop; then `rolls` draws are made from `table`, each picking one entry at random
+# and keeping it with its chance (0..1). Items go to the winner inventory, overflow drops at their feet.
+# ---------------------------------------------------------------------------------------------------------------
+bosses:
+  # Melee: 3-hit combo, leap slam, shockwave. Phase 2 at 50%: faster, adds a 5-hit combo.
+  ashblade:
+    name: "Ashblade"
+    # skin:
+    #   value: "ewogICJ0aW1lc3RhbXAiIDog..."
+    #   signature: "Kx3Lq9..."
+    base-health: 350
+    health-per-extra-player: 0.6
+    gear:
+      head: NETHERITE_HELMET
+      chest: NETHERITE_CHESTPLATE
+      legs: NETHERITE_LEGGINGS
+      feet: NETHERITE_BOOTS
+      main-hand: NETHERITE_SWORD
+    enchants:
+      main-hand: { SHARPNESS: 5, FIRE_ASPECT: 2 }
+    move-speed: 1.0
+    knockback-resistance: 0.8
+    moves:
+      combo3:       # 3 swings, 8 raw each: ~2.2 hp per hit on full diamond, ~6.7 hp if all land
+        type: combo
+        weight: 5
+        range: [0, 3.5]
+        telegraph-ticks: 12
+        damage: 8
+        cooldown-ticks: 40
+        recovery-ticks: 20
+        hits: 3
+        interval-ticks: 8
+      leap-slam:    # ~5.8 hp: about 4 hits kill a full diamond player
+        type: leap-slam
+        weight: 3
+        range: [5, 16]
+        telegraph-ticks: 20
+        damage: 16
+        cooldown-ticks: 160
+        recovery-ticks: 30
+        radius: 4
+      shockwave:    # ~4.8 hp: about 5 hits; jump it to take nothing
+        type: shockwave
+        weight: 2
+        range: [0, 10]
+        telegraph-ticks: 24
+        damage: 14
+        cooldown-ticks: 200
+        recovery-ticks: 30
+        radius: 12
+        speed: 0.6
+      combo5:       # phase 2 only: 5 quick swings
+        type: combo
+        weight: 4
+        range: [0, 3.5]
+        telegraph-ticks: 10
+        damage: 8
+        cooldown-ticks: 60
+        recovery-ticks: 24
+        hits: 5
+        interval-ticks: 6
+      roar:         # played on phase change, never picked by chance
+        type: roar
+        weight: 0
+        invulnerable-ticks: 40
+    phases:
+      - at: 0.5
+        roar: true
+        move-speed: 1.15
+        telegraph-scale: 0.8
+        add-moves: [combo5]
+    loot:
+      guaranteed:
+        - { item: GOLDEN_APPLE, amount: 2 }
+      rolls: 2
+      table:
+        - { item: DIAMOND, amount: 3, chance: 0.5 }
+        - { item: IRON_INGOT, amount: 8, chance: 0.8 }
+        - { item: ENCHANTED_GOLDEN_APPLE, amount: 1, chance: 0.05 }
+    xp: 500
+    commands: []
+    # commands: ["say %player% defeated %boss%!"]
+    cooldown-seconds: 600
+
+  # Mixed: melee combo, arrow volley, backstep + charged shot. Phase 2 at 50%: volleys fire twice, adds a leap slam.
+  thornbow:
+    name: "Thornbow"
+    base-health: 300
+    health-per-extra-player: 0.6
+    gear:
+      head: LEATHER_HELMET
+      chest: CHAINMAIL_CHESTPLATE
+      legs: CHAINMAIL_LEGGINGS
+      feet: LEATHER_BOOTS
+      main-hand: BOW
+      off-hand: IRON_SWORD
+    enchants:
+      main-hand: { POWER: 5 }
+    move-speed: 1.05
+    knockback-resistance: 0.8
+    moves:
+      slash:        # 3 swings, 7 raw each: ~1.9 hp per hit on full diamond
+        type: combo
+        weight: 4
+        range: [0, 3.5]
+        telegraph-ticks: 12
+        damage: 7
+        cooldown-ticks: 40
+        recovery-ticks: 20
+        hits: 3
+        interval-ticks: 8
+      backstep:     # no damage; opens distance so the ranged moves can be used
+        type: backstep
+        weight: 3
+        range: [0, 3]
+        telegraph-ticks: 6
+        damage: 0
+        cooldown-ticks: 100
+        recovery-ticks: 0
+        distance: 8
+      volley:       # 3 arrows, 8 raw each: ~2.2 hp per arrow, ~6.7 hp if all hit
+        type: volley
+        weight: 4
+        range: [6, 30]
+        telegraph-ticks: 14
+        damage: 8
+        cooldown-ticks: 80
+        recovery-ticks: 20
+        arrows: 3
+        spread: 6
+      volley-double: # phase 2 replacement of `volley`: two volleys in a row
+        type: volley
+        weight: 4
+        range: [6, 30]
+        telegraph-ticks: 14
+        damage: 8
+        cooldown-ticks: 100
+        recovery-ticks: 24
+        arrows: 3
+        spread: 6
+        bursts: 2
+      charged-shot: # ~6.8 hp: 3 hits kill a full diamond player; the long tell is the counterplay
+        type: charged-shot
+        weight: 2
+        range: [8, 40]
+        telegraph-ticks: 40
+        damage: 18
+        cooldown-ticks: 200
+        recovery-ticks: 40
+      leap-slam:    # phase 2 only: closes distance
+        type: leap-slam
+        weight: 3
+        range: [6, 20]
+        telegraph-ticks: 18
+        damage: 14
+        cooldown-ticks: 160
+        recovery-ticks: 28
+        radius: 3.5
+      roar:
+        type: roar
+        weight: 0
+        invulnerable-ticks: 40
+    phases:
+      - at: 0.5
+        roar: true
+        move-speed: 1.1
+        telegraph-scale: 0.85
+        add-moves: [volley-double, leap-slam]
+        remove-moves: [volley]
+    loot:
+      guaranteed:
+        - { item: GOLDEN_APPLE, amount: 2 }
+      rolls: 2
+      table:
+        - { item: DIAMOND, amount: 2, chance: 0.5 }
+        - { item: ARROW, amount: 32, chance: 0.8 }
+        - { item: ENCHANTED_GOLDEN_APPLE, amount: 1, chance: 0.05 }
+    xp: 400
+    commands: []
+    cooldown-seconds: 600
