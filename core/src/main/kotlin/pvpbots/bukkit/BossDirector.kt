@@ -286,7 +286,7 @@ class BossDirector(private val plugin: PvpBotsPlugin) {
                     trace?.invoke("title ${e.text} to ${a.inside.map { it.name }}")
                 }
                 is Effect.CooldownBar -> {
-                    val text = "The arena is quiet… returns in ${clock(e.secondsLeft)}"
+                    val text = "The arena is quiet\u2026 returns in ${clock(e.secondsLeft)}"
                     for (p in a.inside) {
                         p.sendActionBar(Component.text(text))
                         a.actionBarred += p.uniqueId
@@ -306,7 +306,7 @@ class BossDirector(private val plugin: PvpBotsPlugin) {
             if (slots.queued() == 0 && slots.used() < slots.capacity()) a.hasSlot = a.key in slots.request(a.key, 1)
         }
         if (!a.hasSlot) {
-            a.bar.name(Component.text("${a.type.name} — waiting for a free bot slot"))
+            a.bar.name(Component.text("${a.type.name} \u2014 waiting for a free bot slot"))
             return
         }
         val world = Bukkit.getWorld(a.rec.world)

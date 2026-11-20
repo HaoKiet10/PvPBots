@@ -246,7 +246,7 @@ internal class BossSelfTest(private val t: SelfTest, private val plugin: PvpBots
             val cooldownSeen = waitHealing(ds, 140) { boss.encounterState(name) == BossEncounter.State.COOLDOWN }
             yield(2)
             val bar = traced.lastOrNull { it.startsWith("actionbar ") }.orEmpty()
-            val barOk2 = bar.contains("The arena is quiet… returns in 0:0")
+            val barOk2 = bar.contains("The arena is quiet\u2026 returns in 0:0")
             val stateLine = boss.state(name)
             var bossDuringCooldown = false
             val back = waitHealing(ds, 200) {
