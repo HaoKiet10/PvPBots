@@ -17,6 +17,9 @@ import org.bukkit.event.EventPriority
 import org.bukkit.event.HandlerList
 import org.bukkit.event.Listener
 import org.bukkit.event.entity.EntityDamageByEntityEvent
+import org.bukkit.event.entity.EntityDamageEvent
+import org.bukkit.entity.Arrow
+import org.bukkit.Location
 import org.bukkit.inventory.ItemStack
 import pvpbots.adapter.BotHandle
 import pvpbots.arena.ArenaLayout
@@ -29,11 +32,12 @@ import pvpbots.math.BlockPos
 import pvpbots.session.AreaRef
 import pvpbots.session.Role
 import pvpbots.session.SessionKey
+import java.util.UUID
 import kotlin.math.abs
 import kotlin.math.hypot
 
 /**
- * Boss self-test checks (B1 arena; B2, B2b, B5, B6, B8 encounters), run by [SelfTest] in [SelfTest.Mode.All] in the
+ * Boss self-test checks (B1 arena; B2, B2b, B5, B6, B8 encounters; B3, B4, B9, B7 moveset), run by [SelfTest] in [SelfTest.Mode.All] in the
  * temporary flat world.
  */
 internal class BossSelfTest(private val t: SelfTest, private val plugin: PvpBotsPlugin, private val world: World) {
@@ -58,14 +62,28 @@ internal class BossSelfTest(private val t: SelfTest, private val plugin: PvpBots
         var bossHits = 0
         val defeated = ArrayList<BossDefeatedEvent>()
 
+        /** (server tick, victim) of every boss hit on a dummy. */
+        val hitLog = ArrayList<Pair<Int, UUID>>()
+
+        /** Damage events on a boss bot: (cause, cancelled at the end, shooter of the projectile if any). */
+        val bossDamage = ArrayList<Triple<EntityDamageEvent.DamageCause, Boolean, UUID?>>()
+
         @EventHandler(priority = EventPriority.LOWEST)
         fun onHit(event: EntityDamageByEntityEvent) {
             val src = (event.damager as? Projectile)?.shooter as? Entity ?: event.damager
             if (manager.record(src.uniqueId)?.role == Role.BOSS && t.isFake(event.entity.uniqueId)) {
                 bossHits++
+                hitLog += Bukkit.getCurrentTick() to event.entity.uniqueId
                 event.isCancelled = true
                 event.entity.fireTicks = 0
             }
+        }
+
+        @EventHandler(priority = EventPriority.MONITOR)
+        fun onBossDamaged(event: EntityDamageEvent) {
+            if (manager.record(event.entity.uniqueId)?.role != Role.BOSS) return
+            val shooter = ((event as? EntityDamageByEntityEvent)?.damager as? Projectile)?.shooter as? Entity
+            bossDamage += Triple(event.cause, event.isCancelled, shooter?.uniqueId)
         }
 
         @EventHandler
@@ -285,6 +303,8 @@ internal class BossSelfTest(private val t: SelfTest, private val plugin: PvpBots
                     "state ${boss.encounterState(name)}, events ${watch.defeated.size - eventsBefore}, commands ${commands.size - cmdsBefore}, " +
                     "slots used ${plugin.slots.used()}",
             )
+
+            moveset(name, area, rec, ds, d1, d2)
         } finally {
             ds.forEach {
                 runCatching { plugin.bossDirector.onAreaChange(it.bukkit, area, null) }
@@ -294,6 +314,167 @@ internal class BossSelfTest(private val t: SelfTest, private val plugin: PvpBots
             service.remove(name)
             if (waitUntil(600) { registry.get(name) == null } < 0) service.forget(name)
         }
+    }
+
+    /**
+     * B3 telegraph, B4 phase, B9 recovery window, B7 cheese guards: one fresh fight against [d1] alone (after B8's
+     * reload every arena is IDLE). [d2] stays outside the region (as the region watcher reports it) for the arrow check.
+     */
+    private suspend fun SequenceScope<Int>.moveset(name: String, area: AreaRef, rec: ArenaRecord, ds: List<BotHandle>, d1: BotHandle, d2: BotHandle) {
+        val boss = plugin.bossDirector
+        val timed = ArrayList<Pair<Int, String>>()
+        boss.trace = { timed += Bukkit.getCurrentTick() to it }
+        val centre = rec.padsB.first()
+        val standY = centre.y + 1.0
+        fun spot(dx: Double, dz: Double) = Location(world, centre.x + 0.5 + dx, standY, centre.z + 0.5 + dz)
+        d1.bukkit.teleport(spot(0.0, -9.0))
+        d2.bukkit.teleport(spot(-12.0, 0.0))
+        yield(2)
+        boss.onAreaChange(d1.bukkit, null, area)
+        val fighting = waitHealing(ds, 200) { boss.encounterState(name) == BossEncounter.State.FIGHT && boss.brain(name) != null && bossOf(name) != null }
+        val brain = boss.brain(name)
+        val bp = bossOf(name)?.player
+        if (fighting < 0 || brain == null || bp == null) {
+            for (c in listOf("B3 telegraph", "B4 phase", "B9 recovery window", "B7 cheese guards")) {
+                t.check(c, false, "no fight against d1 after B8 (state ${boss.encounterState(name)})")
+            }
+            return
+        }
+        suspend fun SequenceScope<Int>.calm(max: Int = 200) = waitHealing(ds, max) { !brain.busy }
+
+        // ---- B3: a forced leap slam deals nothing during its tell, then hits; tell sound + particles traced.
+        bp.teleport(spot(0.0, 0.0))
+        d1.bukkit.teleport(spot(0.0, -9.0))
+        calm()
+        val t0 = Bukkit.getCurrentTick()
+        val forced = brain.force("leap-slam")
+        val slam = waitHealing(ds, 160) { timed.any { it.first >= t0 && it.second.startsWith("hit leap-slam ${d1.bukkit.name}") } }
+        val tell = timed.firstOrNull { it.first >= t0 && it.second.startsWith("tell leap-slam ") }
+        val tellLen = tell?.second?.split(' ')?.getOrNull(3)?.toIntOrNull() ?: -1
+        val tellStart = tell?.first ?: -1
+        val sounded = tell?.second?.contains(" sound ") == true
+        val fx = timed.count { it.first >= tellStart && it.first < tellStart + tellLen && it.second == "tellfx leap-slam" }
+        val duringTell = watch.hitLog.count { it.second == d1.id && it.first >= tellStart && it.first < tellStart + tellLen }
+        val slamTick = timed.firstOrNull { it.first >= t0 && it.second.startsWith("hit leap-slam ${d1.bukkit.name}") }?.first ?: -1
+        val afterTell = watch.hitLog.any { it.second == d1.id && it.first >= tellStart + tellLen }
+        t.check(
+            "B3 telegraph",
+            forced && tell != null && tellLen >= 10 && sounded && fx >= tellLen - 1 && duringTell == 0 && slam >= 0 && slamTick >= tellStart + tellLen && afterTell,
+            "force accepted $forced; tell '${tell?.second}' at tick $tellStart for $tellLen ticks, sound $sounded, particle ticks $fx; " +
+                "boss hits on the dummy during the tell $duringTell; slam hit at tick $slamTick (tell ends ${tellStart + tellLen}); hit after the tell $afterTell",
+        )
+
+        // ---- B4: pool 51% -> no phase; 49% -> one roar (hits ignored meanwhile), bar colour changes, phase-2 move active.
+        calm()
+        boss.setPoolFraction(name, 0.51)
+        yield(5)
+        val colourBefore = boss.barColor(name)
+        val phase2Before = "combo5" in brain.activeMoveIds()
+        val roarsAt51 = timed.count { it.second.startsWith("roar") }
+        boss.setPoolFraction(name, 0.49)
+        val roarAfter = waitHealing(ds, 120) { brain.roaring }
+        val ignored = if (roarAfter >= 0) boss.damageFrom(name, d1.bukkit, 5.0) else -1.0
+        yield(80)
+        heal(ds)
+        val roars = timed.count { it.second.startsWith("roar") }
+        val colourAfter = boss.barColor(name)
+        val phase2After = "combo5" in brain.activeMoveIds()
+        t.check(
+            "B4 phase",
+            roarsAt51 == 0 && !phase2Before && roarAfter >= 0 && ignored == 0.0 && roars == 1 && colourAfter != null && colourAfter != colourBefore &&
+                phase2After && brain.phase == 0,
+            "at 51%: roars $roarsAt51, colour $colourBefore, combo5 active $phase2Before; at 49%: roaring after $roarAfter ticks, " +
+                "a 5 damage hit during the roar took $ignored; roars after 4 s $roars, colour $colourAfter, combo5 active $phase2After, phase ${brain.phase}",
+        )
+
+        // ---- B9: a hit during recovery takes 1.5x; outside it 1x.
+        calm()
+        val bl = bp.location
+        d1.bukkit.teleport(bl.clone().add(bl.direction.setY(0).normalize().multiply(2.0)).apply { y = standY })
+        val forcedCombo = brain.force("combo3")
+        val inRecovery = waitHealing(ds, 200) { brain.recovering }
+        val tookRecovering = if (inRecovery >= 0) boss.damageFrom(name, d1.bukkit, 10.0) else -1.0
+        val outOfRecovery = waitHealing(ds, 200) { !brain.recovering && !brain.roaring }
+        val tookNormal = if (outOfRecovery >= 0 && !brain.recovering) boss.damageFrom(name, d1.bukkit, 10.0) else -1.0
+        t.check(
+            "B9 recovery window",
+            forcedCombo && inRecovery >= 0 && abs(tookRecovering - 15.0) < 1e-6 && abs(tookNormal - 10.0) < 1e-6,
+            "combo forced $forcedCombo, recovering after $inRecovery ticks: a 10 damage hit took $tookRecovering; after recovery it took $tookNormal",
+        )
+
+        // ---- B7: cheese guards.
+        // (a) outside the arena -> back at the centre.
+        bp.teleport(spot(30.0, 0.0))
+        yield(2)
+        val backDist = hypot(bp.location.x - (centre.x + 0.5), bp.location.z - (centre.z + 0.5))
+        val back = backDist <= 1.0
+        // (b) lava: damage events happen, all cancelled; the pool and the boss's own health untouched.
+        calm()
+        val pool0 = boss.health(name)?.current
+        val bl2 = bp.location.block
+        d1.bukkit.teleport(Location(world, bl2.x + 0.5, standY, bl2.z + 3.5))
+        for (dx in -2..2) for (dz in -2..2) {
+            world.getBlockAt(bl2.x + dx, centre.y + 1, bl2.z + dz).takeIf { it.type.isAir }?.setType(Material.LAVA, false)
+        }
+        val lavaBefore = watch.bossDamage.size
+        yield(40)
+        heal(ds)
+        val hot = setOf(EntityDamageEvent.DamageCause.LAVA, EntityDamageEvent.DamageCause.FIRE, EntityDamageEvent.DamageCause.FIRE_TICK)
+        val lavaEvents = watch.bossDamage.drop(lavaBefore).filter { it.first in hot }
+        val lavaAllCancelled = lavaEvents.all { it.second }
+        val poolAfterLava = boss.health(name)?.current
+        val ownFull = bp.health == bp.getAttribute(Attribute.MAX_HEALTH)?.value && !bp.isDead
+        repeat(3) {
+            for (dx in -6..6) for (dz in -6..6) for (dy in 0..2) {
+                val b = world.getBlockAt(bl2.x + dx, centre.y + dy, bl2.z + dz)
+                if (b.type == Material.LAVA || b.type == Material.FIRE) b.setType(Material.AIR, false)
+            }
+            yield(10)
+        }
+        bp.fireTicks = 0
+        // (c) an arrow from a player outside the region reaches the boss; the pool is unchanged.
+        val pool1 = boss.health(name)?.current
+        val shotsBefore = watch.bossDamage.size
+        var arrowHits = 0
+        for (attempt in 0 until 6) {
+            val aim = bp.location.clone().add(0.0, 1.2, 0.0)
+            val from = aim.clone().add(bp.location.direction.setY(0).normalize().multiply(-3.5)).apply { y = standY }
+            d2.bukkit.teleport(from)
+            yield(1)
+            val eye = d2.bukkit.eyeLocation
+            val dir = bp.location.clone().add(0.0, 1.2, 0.0).toVector().subtract(eye.toVector()).normalize().multiply(2.0)
+            d2.bukkit.launchProjectile(Arrow::class.java, dir)
+            yield(10)
+            arrowHits = watch.bossDamage.drop(shotsBefore).count { it.third == d2.id }
+            if (arrowHits > 0) break
+        }
+        world.getEntitiesByClass(Arrow::class.java).filter { (it.shooter as? Entity)?.uniqueId == d2.id }.forEach { it.remove() }
+        val arrowIgnored = arrowHits > 0 && boss.health(name)?.current == pool1
+        // (d) target on a 6-block pillar -> leap or ranged tell within 3 s.
+        calm()
+        val px = centre.x + 8
+        val pz = centre.z
+        val pillar = (1..6).map { world.getBlockAt(px, centre.y + it, pz) }
+        val pillarBefore = pillar.map { it.blockData }
+        val t1 = Bukkit.getCurrentTick()
+        pillar.forEach { it.setType(Material.STONE, false) }
+        d1.bukkit.teleport(Location(world, px + 0.5, centre.y + 7.0, pz + 0.5))
+        val guarded = waitHealing(ds, 60) {
+            timed.any { (tk, s) -> tk >= t1 && s.startsWith("tell ") && (s.contains(" LEAP_SLAM ") || s.contains(" VOLLEY ") || s.contains(" CHARGED_SHOT ")) }
+        }
+        val guardTell = timed.firstOrNull { (tk, s) -> tk >= t1 && s.startsWith("tell ") }?.second
+        yield(60)
+        heal(ds)
+        pillar.forEachIndexed { i, b -> b.setBlockData(pillarBefore[i], false) }
+        d1.bukkit.teleport(spot(0.0, -6.0))
+        t.check(
+            "B7 cheese guards",
+            back && lavaEvents.isNotEmpty() && lavaAllCancelled && pool0 != null && poolAfterLava == pool0 && ownFull && arrowIgnored && guarded >= 0,
+            "teleported 30 blocks out: ${"%.2f".format(backDist)} blocks from the centre 2 ticks later; lava/fire damage events ${lavaEvents.size}, " +
+                "all cancelled $lavaAllCancelled, pool $pool0 -> $poolAfterLava, own health full $ownFull; arrows from outside the region reaching the boss " +
+                "$arrowHits, pool unchanged ${boss.health(name)?.current == pool1}; target on a 6-block pillar: first tell '$guardTell', " +
+                "leap/ranged tell after $guarded ticks",
+        )
     }
 
     /** B1: unknown type refused; a boss arena builds over varied terrain with the right region, then restores every block. */

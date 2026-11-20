@@ -36,7 +36,7 @@ class BossDirector(private val plugin: PvpBotsPlugin) {
     private val manager get() = plugin.botManager
     val rewards = BossRewards(plugin.logger)
 
-    /** Self-test hook: told "title <text>", "actionbar <text>" and "reward <player>" as they happen. */
+    /** Self-test hook: told "title <text>", "actionbar <text>", "reward <player>" and the moveset's tell/hit/roar lines as they happen. */
     var trace: ((String) -> Unit)? = null
 
     private inner class Arena(val rec: ArenaRecord, val type: BossType) {
@@ -144,6 +144,16 @@ class BossDirector(private val plugin: PvpBotsPlugin) {
     internal fun health(arena: String): BossHealth? = arenas[arena]?.health
     internal fun barViewers(arena: String): Set<UUID> = arenas[arena]?.viewers?.toSet().orEmpty()
     internal fun hasSlot(arena: String): Boolean = arenas[arena]?.hasSlot == true
+    internal fun brain(arena: String): BossBrain? = arenas[arena]?.controller?.brain
+    internal fun barColor(arena: String): BossBar.Color? = arenas[arena]?.bar?.color()
+
+    /** Self-test: lowers [arena]'s pool to [fraction] of its max (never raises it). */
+    internal fun setPoolFraction(arena: String, fraction: Double) {
+        val a = arenas[arena] ?: return
+        val drop = a.health.current - fraction * a.health.max
+        if (drop > 0.0) a.health.hit(drop, recovering = false, roaring = false)
+        a.bar.progress(a.health.fraction.toFloat())
+    }
 
     // ---- damage ----
 
@@ -230,6 +240,7 @@ class BossDirector(private val plugin: PvpBotsPlugin) {
         if (r == null || !r.player.isValid || r.player.isDead) {
             plugin.logger.warning("Boss arena ${a.rec.name}: the boss was lost (removed or dead outside the fight); the encounter is reset")
             a.bossId = null
+            a.controller?.close()
             a.controller = null
             run(a, a.enc.shutdown())
             removeBoss(a) // gives the slot back even if the encounter had nothing to remove
@@ -243,6 +254,7 @@ class BossDirector(private val plugin: PvpBotsPlugin) {
         if (!insideWall(a.rec, bot) || bot.location.y < c0.y - 1.0 || bot.location.y > c0.y + ArenaLayout.BOSS_CLEAR_HEIGHT + 4.0) {
             bot.teleport(spawnPoint(a, bot.world))
             bot.fallDistance = 0f
+            c.onTeleportedBack()
         }
         bot.fireTicks = 0
         try {
@@ -321,7 +333,14 @@ class BossDirector(private val plugin: PvpBotsPlugin) {
         }
         a.waitingSpawn = false
         a.bossId = record.id
-        a.controller = BossController(manager.adapter, record.handle, a.type, a.rec)
+        a.bar.color(PHASE_COLOURS[0])
+        a.controller = BossController(
+            manager.adapter, record.handle, a.type, a.rec,
+            fraction = { a.health.fraction },
+            inArena = { l -> insideDisc(a.rec, l) },
+            onPhase = { i -> a.bar.color(PHASE_COLOURS[(i + 1).coerceIn(0, PHASE_COLOURS.lastIndex)]) },
+            tracer = { trace },
+        )
         a.bar.name(Component.text(a.type.name))
         roar(record.player.location)
     }
@@ -330,6 +349,7 @@ class BossDirector(private val plugin: PvpBotsPlugin) {
     private fun removeBoss(a: Arena) {
         a.waitingSpawn = false
         a.deadPending = false
+        a.controller?.close()
         a.bossId?.let { manager.remove(it) }
         a.bossId = null
         a.controller = null
@@ -430,7 +450,11 @@ class BossDirector(private val plugin: PvpBotsPlugin) {
 
     private fun insideWall(rec: ArenaRecord, p: Player): Boolean {
         if (!p.isValid && !p.isDead) return false
-        val l = p.location
+        return insideDisc(rec, p.location)
+    }
+
+    /** The arena's round floor: same world, horizontal distance from the centre block's centre <= [RADIUS]. */
+    private fun insideDisc(rec: ArenaRecord, l: Location): Boolean {
         if (l.world?.name != rec.world) return false
         val c = rec.padsB.firstOrNull() ?: return false
         return Math.hypot(l.x - (c.x + 0.5), l.z - (c.z + 0.5)) <= RADIUS
@@ -467,6 +491,9 @@ class BossDirector(private val plugin: PvpBotsPlugin) {
         val RADIUS: Double = (Preset.BOSS.inside / 2).toDouble()
         private const val RETRY_MS = 5000L
         private const val HURT_TICKS = 10
+
+        /** Boss bar colour before the first phase, then per phase (the last one repeats). */
+        private val PHASE_COLOURS = listOf(BossBar.Color.RED, BossBar.Color.PURPLE, BossBar.Color.PINK, BossBar.Color.YELLOW)
 
         fun clock(seconds: Int): String = "%d:%02d".format(seconds / 60, seconds % 60)
     }
