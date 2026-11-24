@@ -214,6 +214,7 @@ internal class BossSelfTest(private val t: SelfTest, private val plugin: PvpBots
             for (d in listOf(d1, d2, d3)) d.bukkit.inventory.setItemInMainHand(ItemStack(Material.IRON_SWORD))
             val xpBefore = ds.associate { it.id to it.bukkit.totalExperience }
             // A real hit through the damage listener lowers the pool, never the fake player's own health.
+            yield(20) // a full attack charge after the weapon swap
             val before = boss.health(name)?.current ?: 0.0
             if (bossP != null) manager.adapter.attack(d1, bossP)
             yield(12)
@@ -274,7 +275,7 @@ internal class BossSelfTest(private val t: SelfTest, private val plugin: PvpBots
             }
             t.check(
                 "B6 victory",
-                raised && realHit > 0.0 && bossFull && afterEnv == afterHit && pvpBlocked && outIgnored && bossAttacked >= 0 && dead >= 0 && gone &&
+                raised && realHit >= 5.0 && bossFull && afterEnv == afterHit && pvpBlocked && outIgnored && bossAttacked >= 0 && dead >= 0 && gone &&
                     events.size == 1 && winners == setOf(d1.id, d2.id) && events.single().bossType == "ashblade" && events.single().arena == name &&
                     lootOk && xpOk && cmdOk && titled && cooldownSeen >= 0 && barOk2 && stateLine.startsWith("cooldown") && !bossDuringCooldown && back >= 0,
                 "max raised by a 4th player $raised ($max4); a real hit took ${"%.2f".format(realHit)} from the pool, boss own health full $bossFull; " +

@@ -264,8 +264,9 @@ the plugin itself blocks player-versus-player damage inside).
   `/pvpbots clear`** (the boss is available again right after any of them).
 
 **Damage rules in boss arenas.**
-- Damage dealt to the boss is its **final damage** (after the boss's own armour and enchantments) subtracted from the
-  plugin health pool; the fake player's own health stays full. It is **x1.5 during recovery windows**, and **ignored
+- Damage dealt to the boss is the hit's damage **before the boss's own armour** (the attacker's weapon, enchantments
+  and critical hits count) subtracted from the plugin health pool; the boss's gear is for looks and for its own
+  attacks, and `base-health` alone sets how tough it is. The fake player's own health stays full. It is **x1.5 during recovery windows**, and **ignored
   during a roar and when it comes from outside the arena**. Fire, lava, fall, drowning, suffocation and other
   non-entity damage do nothing to it.
 - "Inside the arena" for the boss is **inside the region AND within the round wall** (horizontal radius 20 from the
@@ -377,7 +378,9 @@ Items go into the winner's inventory; the overflow drops at their feet.
 | `roar` | `invulnerable-ticks` | Phase-change move (give it `weight: 0`): the boss is invulnerable and pushes players back. |
 
 Tuning guide against full diamond armour (20 armour, 8 toughness): raw 8 hits for about 2.2 hp, 14 about 4.8 hp, 16
-about 5.8 hp of a 20 hp bar; the examples let the big moves kill in about 4-5 hits. Invalid values are reported as
+about 5.8 hp of a 20 hp bar; the examples let the big moves kill in about 4-5 hits. For the boss's own toughness:
+a fully charged netherite sword with Sharpness V hits the pool for 11 (about 16 with a critical hit), so the
+example `base-health` 350 takes one player roughly 25-30 good hits. Invalid values are reported as
 `config: ...` warnings in the log; `/pvpbots reload` re-reads the file.
 
 ### For developers: `BossDefeatedEvent`

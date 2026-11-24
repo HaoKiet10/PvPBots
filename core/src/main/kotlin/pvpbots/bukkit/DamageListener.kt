@@ -31,14 +31,16 @@ class DamageListener(private val manager: BotManager, private val bosses: () -> 
     /**
      * Last word on damage to a boss bot: always cancelled (so it is immune to fall, fire, lava, drowning, suffocation
      * and any other non-entity damage). A hit that [onDamage] let through (a real player inside the boss's arena,
-     * directly or with a projectile, judged by the shooter) lowers the pool by its final damage.
+     * directly or with a projectile, judged by the shooter) lowers the pool by its damage BEFORE the boss's own
+     * armour: the boss wears its gear for looks and for its own attacks, and its toughness is its health pool
+     * (`base-health`), so armour must not cut player hits a second time.
      */
     @EventHandler(priority = EventPriority.HIGHEST)
     fun onBossDamage(event: EntityDamageEvent) {
         val victim = event.entity
         if (manager.record(victim.uniqueId)?.key !is SessionKey.Boss) return
         val counted = !event.isCancelled
-        val amount = event.finalDamage
+        val amount = event.damage // weapon, enchantments and crits included; boss armour not applied
         event.isCancelled = true
         if (!counted) return
         val damager = (event as? EntityDamageByEntityEvent)?.damager ?: return

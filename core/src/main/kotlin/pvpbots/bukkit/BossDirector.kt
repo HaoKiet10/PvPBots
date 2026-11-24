@@ -178,20 +178,20 @@ class BossDirector(private val plugin: PvpBotsPlugin) {
 
     /**
      * Any damage to boss bot [botId] was cancelled by the listener; [attacker] (a real player, the shooter for
-     * projectiles) dealt [finalDamage]. Vanilla's 10-tick hurt window is kept: within it only the part above the last
-     * hit counts.
+     * projectiles) dealt [damage] (before the boss's own armour). Vanilla's 10-tick hurt window is kept: within it
+     * only the part above the last hit counts.
      */
-    fun onBossHit(botId: UUID, attacker: Player, finalDamage: Double) {
+    fun onBossHit(botId: UUID, attacker: Player, damage: Double) {
         val a = arenas[bossArena(botId) ?: return]?.takeIf { it.bossId == botId } ?: return
         val tick = Bukkit.getCurrentTick()
-        var raw = finalDamage
+        var raw = damage
         if (tick - a.lastHitTick < HURT_TICKS) {
-            if (finalDamage <= a.lastHitAmount) return
-            raw = finalDamage - a.lastHitAmount
-            if (damageFrom(a.rec.name, attacker, raw) > 0.0) a.lastHitAmount = finalDamage
+            if (damage <= a.lastHitAmount) return
+            raw = damage - a.lastHitAmount
+            if (damageFrom(a.rec.name, attacker, raw) > 0.0) a.lastHitAmount = damage
         } else if (damageFrom(a.rec.name, attacker, raw) > 0.0) {
             a.lastHitTick = tick
-            a.lastHitAmount = finalDamage
+            a.lastHitAmount = damage
         }
     }
 
